@@ -11,20 +11,39 @@ export interface ParsedImageMessage {
   group_layout_id?: number // ảnh gửi theo lô cùng group_layout_id = 1 chùm
 }
 
+export interface ParsedCallMessage {
+  durationSeconds: number
+  durationLabel: string
+}
+
+function parseJson(value: string | null | undefined): any {
+  if (!value) return null
+  try {
+    return JSON.parse(value)
+  } catch {
+    return null
+  }
+}
+
+export function formatCallDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(Number(totalSeconds) || 0))
+  const minutes = Math.floor(safeSeconds / 60)
+  const seconds = safeSeconds % 60
+  if (minutes > 0 && seconds > 0) return `${minutes} phút ${seconds} giây`
+  if (minutes > 0) return `${minutes} phút`
+  return `${seconds} giây`
+}
+
 export function tryParseImageMessage(content: string | null | undefined): ParsedImageMessage | null {
   if (!content) return null
   const t = content.trim()
   if (!t.startsWith("{")) return null
   try {
-    const parsed = JSON.parse(t)
+    const parsed = parseJson(t)
     if (parsed.href && (parsed.thumb || parsed.href)) {
       let params: any = {}
       if (parsed.params) {
-        try {
-          params = typeof parsed.params === "string" ? JSON.parse(parsed.params) : parsed.params
-        } catch {
-          /* params hỏng → bỏ qua, ảnh vẫn hiện được */
-        }
+        params = typeof parsed.params === "string" ? parseJson(parsed.params) || {} : parsed.params
       }
       const href = String(parsed.hd || parsed.href)
       const thumb = String(parsed.thumb || parsed.href)
@@ -41,4 +60,26 @@ export function tryParseImageMessage(content: string | null | undefined): Parsed
     /* không phải JSON hợp lệ → coi như text thường */
   }
   return null
+}
+
+export function tryParseCallMessage(content: string | null | undefined): ParsedCallMessage | null {
+  if (!content) return null
+  const parsed = parseJson(content.trim())
+  if (!parsed) return null
+
+  const params = typeof parsed.params === "string" ? parseJson(parsed.params) : parsed.params
+  const action = String(parsed.action ?? "")
+  const title = String(parsed.title ?? "")
+  const description = String(parsed.description ?? "")
+  const durationSeconds = Number(params?.duration)
+
+  if (title !== "sendBubbleMessage") return null
+  if (action !== "recommened.calltime") return null
+  if (!description.toLowerCase().includes("cuộc gọi") && !description.toLowerCase().includes("cuoc goi")) return null
+  if (!Number.isFinite(durationSeconds) || durationSeconds < 0) return null
+
+  return {
+    durationSeconds: Math.floor(durationSeconds),
+    durationLabel: formatCallDuration(durationSeconds),
+  }
 }

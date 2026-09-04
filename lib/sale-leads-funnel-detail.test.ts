@@ -55,6 +55,8 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
       type: "text",
       imageUrl: null,
       thumbUrl: null,
+      callDurationSeconds: null,
+      callDurationLabel: null,
     });
   });
 
@@ -82,6 +84,40 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
         msg_type: "chat.ecard",
       }),
     ).toMatchObject({
+      imageUrl: null,
+      thumbUrl: null,
+    });
+  });
+
+  it("extracts Zalo call duration from bubble messages", () => {
+    const callJson = JSON.stringify({
+      title: "sendBubbleMessage",
+      description: "Cuộc gọi",
+      href: "",
+      thumb: "",
+      childnumber: 0,
+      action: "recommened.calltime",
+      params: JSON.stringify({
+        duration: 145,
+        isCaller: 0,
+        isEnableCallback: 1,
+        calltype: 0,
+      }),
+    });
+
+    expect(
+      mapZaloMessageForSaleLeadDetail({
+        msg_id: "msg-4",
+        content: callJson,
+        is_self: false,
+        dateAction: "2026-09-04T05:00:00.000Z",
+        msg_type: "chat.call",
+      }),
+    ).toMatchObject({
+      content: "Cuộc gọi",
+      type: "call",
+      callDurationSeconds: 145,
+      callDurationLabel: "2 phút 25 giây",
       imageUrl: null,
       thumbUrl: null,
     });

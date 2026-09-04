@@ -140,6 +140,8 @@ interface LeadDetail {
     type: string;
     imageUrl: string | null;
     thumbUrl: string | null;
+    callDurationSeconds: number | null;
+    callDurationLabel: string | null;
   }>;
 }
 
@@ -757,6 +759,16 @@ function FunnelClient() {
                                 className="max-h-72 w-auto max-w-full border border-slate-200 object-contain"
                               />
                             </a>
+                          ) : message.callDurationLabel ? (
+                            <div className="inline-flex items-center gap-2 rounded-none border border-slate-200 bg-slate-50 px-3 py-2">
+                              <span className="inline-flex size-8 items-center justify-center border border-slate-200 bg-white text-sky-700">
+                                <Phone className="size-4" />
+                              </span>
+                              <span>
+                                <span className="block font-medium">Cuộc gọi</span>
+                                <span className="block text-xs text-slate-500">{message.callDurationLabel}</span>
+                              </span>
+                            </div>
                           ) : (
                             <div className="whitespace-pre-wrap break-words">{message.content || `[${message.type}]`}</div>
                           )}
