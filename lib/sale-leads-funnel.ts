@@ -10,6 +10,28 @@ export type SaleLeadWorkStage =
 
 export type SaleLeadGapBucket = "lt5" | "5_10" | "gt10" | "no_price" | "closed";
 
+export interface SaleLeadFilterableRow {
+  workStage: SaleLeadWorkStage;
+  gapBucket: SaleLeadGapBucket;
+  hasImages: boolean;
+  inspected: boolean;
+}
+
+export interface SaleLeadListFilters {
+  stages?: SaleLeadWorkStage[];
+  gaps?: SaleLeadGapBucket[];
+  hasImages?: boolean;
+  inspected?: boolean;
+}
+
+export interface SaleLeadFilterCounts {
+  total: number;
+  stages: Record<SaleLeadWorkStage, number>;
+  gaps: Record<SaleLeadGapBucket, number>;
+  hasImages: number;
+  inspected: number;
+}
+
 export interface AgentPricingEvent {
   type?: string | null;
   at?: string | null;
@@ -97,6 +119,8 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
     description: "Không map được phone sang hội thoại Zalo.",
   },
 ];
+
+const GAP_BUCKETS: SaleLeadGapBucket[] = ["lt5", "5_10", "gt10", "no_price", "closed"];
 
 const TERMINAL_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID", "FAILED"]);
 const OFFER_EVENT_TYPES = new Set(["T_AGENT_FIRST_VUCAR_OFFER", "T_AGENT_VUCAR_OFFER_SUBSEQUENT"]);
@@ -195,6 +219,38 @@ export function getGapBucket(priceCustomer: number | null | undefined, highestBi
   if (gapPercent < 5) return "lt5";
   if (gapPercent <= 10) return "5_10";
   return "gt10";
+}
+
+export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], filters: SaleLeadListFilters): T[] {
+  return rows.filter((row) => {
+    const stageOk = !filters.stages?.length || filters.stages.includes(row.workStage);
+    const gapOk = !filters.gaps?.length || filters.gaps.includes(row.gapBucket);
+    const imageOk = filters.hasImages === undefined || row.hasImages === filters.hasImages;
+    const inspectedOk = filters.inspected === undefined || row.inspected === filters.inspected;
+    return stageOk && gapOk && imageOk && inspectedOk;
+  });
+}
+
+export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLeadFilterCounts {
+  const stages = Object.fromEntries(SALE_LEAD_STAGE_CONFIG.map((stage) => [stage.key, 0])) as Record<SaleLeadWorkStage, number>;
+  const gaps = Object.fromEntries(GAP_BUCKETS.map((gap) => [gap, 0])) as Record<SaleLeadGapBucket, number>;
+
+  let hasImages = 0;
+  let inspected = 0;
+  for (const row of rows) {
+    stages[row.workStage] = (stages[row.workStage] ?? 0) + 1;
+    gaps[row.gapBucket] = (gaps[row.gapBucket] ?? 0) + 1;
+    if (row.hasImages) hasImages += 1;
+    if (row.inspected) inspected += 1;
+  }
+
+  return {
+    total: rows.length,
+    stages,
+    gaps,
+    hasImages,
+    inspected,
+  };
 }
 
 export function isInInspectionRegion(location: string | null | undefined): boolean {

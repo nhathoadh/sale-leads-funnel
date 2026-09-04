@@ -6,7 +6,9 @@ import {
   SALE_LEAD_STAGE_CONFIG,
   calculateGapPercent,
   classifySaleLeadStage,
+  filterSaleLeadRows,
   formatMillionShort,
+  getSaleLeadFilterCounts,
   getGapBucket,
   getQuoteTimestamps,
   isInInspectionRegion,
@@ -37,6 +39,12 @@ function parseCsv(value: string | null): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseBooleanFilter(value: string | null): boolean | undefined {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return undefined;
 }
 
 function parseJson(value: unknown): any {
@@ -168,6 +176,8 @@ export async function GET(request: Request) {
     const sort = (searchParams.get("sort") || "last_touch_oldest") as SortKey;
     const stageFilter = parseCsv(searchParams.get("stage")) as SaleLeadWorkStage[];
     const gapFilter = parseCsv(searchParams.get("gap")) as SaleLeadGapBucket[];
+    const hasImagesFilter = parseBooleanFilter(searchParams.get("hasImages"));
+    const inspectedFilter = parseBooleanFilter(searchParams.get("inspected"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
 
     const queryParams: unknown[] = [from, to];
@@ -239,6 +249,12 @@ export async function GET(request: Request) {
                COUNT(m.msg_id) AS message_count,
                COUNT(m.msg_id) FILTER (WHERE m.is_self = false) AS customer_message_count,
                COUNT(m.msg_id) FILTER (WHERE m.is_self = true) AS sale_message_count,
+               COUNT(m.msg_id) FILTER (
+                 WHERE m.is_self = false
+                   AND m.content IS NOT NULL
+                   AND m.content LIKE '{%'
+                   AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
+               ) AS customer_image_message_count,
                MAX(m.created_at) AS last_message_at,
                MAX(m.created_at) FILTER (WHERE m.is_self = false) AS last_customer_at,
                MAX(m.created_at) FILTER (WHERE m.is_self = true) AS last_sale_at
@@ -324,15 +340,20 @@ export async function GET(request: Request) {
         const zalo = row.phone ? zaloByPhone.get(row.phone) : null;
         const relationCount = Number(zalo?.relation_count ?? 0);
         const customerMessageCount = Number(zalo?.customer_message_count ?? 0);
+        const customerZaloImageCount = Number(zalo?.customer_image_message_count ?? 0);
         const inspected = inspectionByCar.has(row.car_id);
         const booked = bookingByCar.has(row.car_id);
         const priceCustomer = numberOrNull(row.price_customer ?? latest?.price_customer);
         const gapPercent = calculateGapPercent(priceCustomer, fallbackHighestBid);
+        const storedImageCount = imageCount(row.additional_images);
+        const summaryHadImage = latest?.had_car_image === true || latest?.had_image === true;
+        const hasImages = storedImageCount > 0 || customerZaloImageCount > 0 || summaryHadImage;
+        const hasEnoughImagesForStage = hasEnoughImages(row.additional_images, summaryHadImage) || customerZaloImageCount > 0;
         const classifierInput = {
           crmStage: row.stage,
           hasZaloChat: relationCount > 0,
           customerMessageCount,
-          hasEnoughImages: hasEnoughImages(row.additional_images, latest?.had_car_image === true || latest?.had_image === true),
+          hasEnoughImages: hasEnoughImagesForStage,
           inInspectionRegion: isInInspectionRegion(row.location ?? latest?.location),
           hasInspectionBooking: booked,
           isInspected: inspected,
@@ -379,11 +400,12 @@ export async function GET(request: Request) {
           gapBucket: getGapBucket(priceCustomer, fallbackHighestBid),
           inspected,
           booked,
+          hasImages,
           lastTouchAt,
           lastTouchHours: hoursSince(lastTouchAt),
           lastCustomerAt: zalo?.last_customer_at ? String(zalo.last_customer_at) : null,
           quoteTimestamps,
-          imageCount: imageCount(row.additional_images),
+          imageCount: storedImageCount + customerZaloImageCount,
           priceCustomerLabel: formatMillionShort(priceCustomer),
           highestBidLabel: formatMillionShort(fallbackHighestBid),
           gapLabel:
@@ -394,20 +416,17 @@ export async function GET(request: Request) {
       })
       .filter(Boolean) as any[];
 
-    const filteredRows = allRows.filter((row) => {
-      const stageOk = stageFilter.length === 0 || stageFilter.includes(row.workStage);
-      const gapOk = gapFilter.length === 0 || gapFilter.includes(row.gapBucket);
-      return stageOk && gapOk;
+    const counts = getSaleLeadFilterCounts(allRows);
+    const filteredRows = filterSaleLeadRows(allRows, {
+      stages: stageFilter,
+      gaps: gapFilter,
+      hasImages: hasImagesFilter,
+      inspected: inspectedFilter,
     });
     const sortedRows = sortRows(filteredRows, sort);
     const total = sortedRows.length;
     const start = (page - 1) * perPage;
     const leads = sortedRows.slice(start, start + perPage);
-
-    const stageCounts = Object.fromEntries(SALE_LEAD_STAGE_CONFIG.map((stage) => [stage.key, 0]));
-    for (const row of allRows) {
-      stageCounts[row.workStage] = (stageCounts[row.workStage] ?? 0) + 1;
-    }
 
     const picOptions = Array.from(
       new Map(
@@ -418,14 +437,26 @@ export async function GET(request: Request) {
     ).sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), "vi"));
 
     return NextResponse.json({
-      filters: { from, to, pic: picIds, stage: stageFilter, gap: gapFilter, sort, page, perPage },
+      filters: {
+        from,
+        to,
+        pic: picIds,
+        stage: stageFilter,
+        gap: gapFilter,
+        hasImages: hasImagesFilter,
+        inspected: inspectedFilter,
+        sort,
+        page,
+        perPage,
+      },
       total,
       scanned: baseRows.length,
       page,
       perPage,
       totalPages: Math.max(1, Math.ceil(total / perPage)),
       warnings: zaloUnavailable ? ["zalo_unavailable"] : [],
-      stages: SALE_LEAD_STAGE_CONFIG.map((stage) => ({ ...stage, count: stageCounts[stage.key] ?? 0 })),
+      counts,
+      stages: SALE_LEAD_STAGE_CONFIG.map((stage) => ({ ...stage, count: counts.stages[stage.key] ?? 0 })),
       picOptions,
       leads,
     });

@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   calculateGapPercent,
   classifySaleLeadStage,
+  filterSaleLeadRows,
+  getSaleLeadFilterCounts,
   getQuoteTimestamps,
   hasQuotedAfter,
   type SaleLeadClassifierInput,
+  type SaleLeadFilterableRow,
 } from "@/lib/sale-leads-funnel";
 
 function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassifierInput {
@@ -143,5 +146,52 @@ describe("calculateGapPercent", () => {
 
   it("returns zero when the bid reaches or exceeds the customer price", () => {
     expect(calculateGapPercent(500_000_000, 510_000_000)).toBe(0);
+  });
+});
+
+describe("sale lead list filters", () => {
+  const rows: SaleLeadFilterableRow[] = [
+    { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false },
+    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false },
+    { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true },
+    { workStage: "follow_up_after_quote", gapBucket: "closed", hasImages: true, inspected: true },
+  ];
+
+  it("filters leads by images and inspection status in addition to stage and gap", () => {
+    expect(
+      filterSaleLeadRows(rows, {
+        stages: ["need_quote", "follow_up_after_quote"],
+        gaps: ["5_10", "closed"],
+        hasImages: true,
+        inspected: true,
+      }),
+    ).toEqual([rows[2], rows[3]]);
+
+    expect(filterSaleLeadRows(rows, { hasImages: true, inspected: false })).toEqual([rows[1]]);
+  });
+
+  it("counts filter buttons from the full unfiltered row set", () => {
+    expect(getSaleLeadFilterCounts(rows)).toEqual({
+      total: 4,
+      stages: {
+        need_contact: 1,
+        need_images: 1,
+        need_price_source: 0,
+        need_quote: 1,
+        need_inspection_booking: 0,
+        need_post_inspection_quote: 0,
+        follow_up_after_quote: 1,
+        no_zalo: 0,
+      },
+      gaps: {
+        lt5: 1,
+        "5_10": 1,
+        gt10: 0,
+        no_price: 1,
+        closed: 1,
+      },
+      hasImages: 3,
+      inspected: 2,
+    });
   });
 });

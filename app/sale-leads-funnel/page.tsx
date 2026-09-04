@@ -7,6 +7,7 @@ import {
   CalendarDays,
   Check,
   Clipboard,
+  Image,
   Loader2,
   MessageCircle,
   Phone,
@@ -42,6 +43,7 @@ interface FunnelLead {
   gapAmount: number | null;
   gapPercent: number | null;
   gapBucket: SaleLeadGapBucket;
+  hasImages: boolean;
   inspected: boolean;
   booked: boolean;
   lastTouchAt: string | null;
@@ -60,6 +62,8 @@ interface FunnelResponse {
     pic: string[];
     stage: SaleLeadWorkStage[];
     gap: SaleLeadGapBucket[];
+    hasImages?: boolean;
+    inspected?: boolean;
     sort: SortKey;
     page: number;
     perPage: number;
@@ -70,6 +74,13 @@ interface FunnelResponse {
   perPage: number;
   totalPages: number;
   warnings?: string[];
+  counts?: {
+    total: number;
+    stages: Record<SaleLeadWorkStage, number>;
+    gaps: Record<SaleLeadGapBucket, number>;
+    hasImages: number;
+    inspected: number;
+  };
   stages: Array<(typeof SALE_LEAD_STAGE_CONFIG)[number] & { count: number }>;
   picOptions: Array<{ id: string; name: string }>;
   leads: FunnelLead[];
@@ -190,6 +201,44 @@ function classNames(...items: Array<string | false | null | undefined>) {
   return items.filter(Boolean).join(" ");
 }
 
+function CountFilterButton({
+  active,
+  count,
+  label,
+  title,
+  tone = "slate",
+  onClick,
+}: {
+  active: boolean;
+  count: number;
+  label: string;
+  title?: string;
+  tone?: "slate" | "sky" | "teal";
+  onClick: () => void;
+}) {
+  const activeClass =
+    tone === "sky"
+      ? "border-sky-700 bg-sky-700 text-white"
+      : tone === "teal"
+        ? "border-teal-700 bg-teal-700 text-white"
+        : "border-slate-900 bg-slate-900 text-white";
+
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={classNames(
+        "flex h-9 w-full items-center justify-between gap-3 border px-3 text-left text-sm font-medium hover:bg-slate-50",
+        active ? activeClass : "border-slate-200 bg-white text-slate-800",
+      )}
+    >
+      <span className="truncate">{label}</span>
+      <span className={classNames("shrink-0 text-xs", active ? "text-white/75" : "text-slate-400")}>{count}</span>
+    </button>
+  );
+}
+
 function FunnelClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -206,9 +255,11 @@ function FunnelClient() {
     const pic = searchParams.get("pic")?.split(",").filter(Boolean) ?? [];
     const stage = searchParams.get("stage")?.split(",").filter(Boolean) ?? [];
     const gap = searchParams.get("gap")?.split(",").filter(Boolean) ?? [];
+    const hasImages = searchParams.get("hasImages") === "true";
+    const inspected = searchParams.get("inspected") === "true";
     const sort = (searchParams.get("sort") || "last_touch_oldest") as SortKey;
     const page = Number(searchParams.get("page") || 1);
-    return { from, to, pic, stage, gap, sort, page };
+    return { from, to, pic, stage, gap, hasImages, inspected, sort, page };
   }, [searchParams]);
 
   const updateParams = (patch: Partial<typeof params>) => {
@@ -221,6 +272,10 @@ function FunnelClient() {
     setCsvParam(next, "pic", merged.pic);
     setCsvParam(next, "stage", merged.stage);
     setCsvParam(next, "gap", merged.gap);
+    if (merged.hasImages) next.set("hasImages", "true");
+    else next.delete("hasImages");
+    if (merged.inspected) next.set("inspected", "true");
+    else next.delete("inspected");
     router.replace(`/sale-leads-funnel?${next.toString()}`);
   };
 
@@ -236,6 +291,8 @@ function FunnelClient() {
     setCsvParam(url.searchParams, "pic", params.pic);
     setCsvParam(url.searchParams, "stage", params.stage);
     setCsvParam(url.searchParams, "gap", params.gap);
+    if (params.hasImages) url.searchParams.set("hasImages", "true");
+    if (params.inspected) url.searchParams.set("inspected", "true");
 
     fetch(url.toString(), { signal: controller.signal })
       .then(async (response) => {
@@ -252,7 +309,17 @@ function FunnelClient() {
       .finally(() => setLoading(false));
 
     return () => controller.abort();
-  }, [params.from, params.to, params.pic.join(","), params.stage.join(","), params.gap.join(","), params.sort, params.page]);
+  }, [
+    params.from,
+    params.to,
+    params.pic.join(","),
+    params.stage.join(","),
+    params.gap.join(","),
+    params.hasImages,
+    params.inspected,
+    params.sort,
+    params.page,
+  ]);
 
   useEffect(() => {
     if (!selectedLead) {
@@ -310,231 +377,255 @@ function FunnelClient() {
         </div>
       </header>
 
-      <main className="space-y-4 px-5 py-4">
-        <section className="grid gap-3 border border-slate-200 bg-white p-3 lg:grid-cols-[1fr_220px_220px_120px]">
-          <label className="grid gap-1 text-xs font-medium text-slate-500">
-            Khoảng ngày
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="date"
-                value={params.from}
-                onChange={(event) => updateParams({ from: event.target.value })}
-                className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
-              />
-              <input
-                type="date"
-                value={params.to}
-                onChange={(event) => updateParams({ to: event.target.value })}
-                className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
-              />
-            </div>
-          </label>
-          <label className="grid gap-1 text-xs font-medium text-slate-500">
-            PIC
-            <select
-              value={params.pic[0] || ""}
-              onChange={(event) => updateParams({ pic: event.target.value ? [event.target.value] : [] })}
-              className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
-            >
-              <option value="">Tất cả PIC</option>
-              {data?.picOptions.map((pic) => (
-                <option key={pic.id} value={pic.id}>
-                  {pic.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="grid gap-1 text-xs font-medium text-slate-500">
-            Sắp xếp
-            <select
-              value={params.sort}
-              onChange={(event) => updateParams({ sort: event.target.value as SortKey })}
-              className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
-            >
-              {SORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            onClick={() => updateParams({})}
-            className="mt-auto inline-flex h-9 items-center justify-center gap-2 border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50"
-          >
-            <RefreshCw className="size-4" />
-            Tải lại
-          </button>
-        </section>
-
-        {data?.warnings?.includes("zalo_unavailable") && (
-          <div className="border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            Không kết nối được dữ liệu Zalo trong lần tải này; nhóm stage dựa trên hội thoại có thể chưa chính xác.
-          </div>
-        )}
-
-        <section className="space-y-3 border border-slate-200 bg-white p-3">
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => updateParams({ stage: [] })}
-              className={classNames(
-                "border px-3 py-1.5 text-sm font-medium",
-                params.stage.length === 0 ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white",
-              )}
-            >
-              Tất cả
-            </button>
-            {data?.stages.map((stage) => (
+      <main className="grid gap-4 px-5 py-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <aside className="space-y-3 lg:sticky lg:top-[73px] lg:max-h-[calc(100vh-92px)] lg:overflow-y-auto">
+          <section className="space-y-3 border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold">Bộ lọc</div>
               <button
-                key={stage.key}
                 type="button"
+                onClick={() => updateParams({})}
+                className="inline-flex size-8 items-center justify-center border border-slate-200 text-slate-600 hover:bg-slate-50"
+                aria-label="Tải lại"
+                title="Tải lại"
+              >
+                <RefreshCw className="size-4" />
+              </button>
+            </div>
+
+            <label className="grid gap-1 text-xs font-medium text-slate-500">
+              Khoảng ngày
+              <div className="grid gap-2">
+                <input
+                  type="date"
+                  value={params.from}
+                  onChange={(event) => updateParams({ from: event.target.value })}
+                  className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+                />
+                <input
+                  type="date"
+                  value={params.to}
+                  onChange={(event) => updateParams({ to: event.target.value })}
+                  className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+                />
+              </div>
+            </label>
+
+            <label className="grid gap-1 text-xs font-medium text-slate-500">
+              PIC
+              <select
+                value={params.pic[0] || ""}
+                onChange={(event) => updateParams({ pic: event.target.value ? [event.target.value] : [] })}
+                className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+              >
+                <option value="">Tất cả PIC</option>
+                {data?.picOptions.map((pic) => (
+                  <option key={pic.id} value={pic.id}>
+                    {pic.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="grid gap-1 text-xs font-medium text-slate-500">
+              Sắp xếp
+              <select
+                value={params.sort}
+                onChange={(event) => updateParams({ sort: event.target.value as SortKey })}
+                className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+              >
+                {SORT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </section>
+
+          <section className="space-y-2 border border-slate-200 bg-white p-3">
+            <CountFilterButton
+              active={params.stage.length === 0 && params.gap.length === 0 && !params.hasImages && !params.inspected}
+              label="Tất cả"
+              count={data?.counts?.total ?? data?.scanned ?? 0}
+              onClick={() => updateParams({ stage: [], gap: [], hasImages: false, inspected: false })}
+            />
+            <div className="h-px bg-slate-100" />
+            {data?.stages.map((stage) => (
+              <CountFilterButton
+                key={stage.key}
+                active={params.stage.includes(stage.key)}
+                label={stage.shortLabel}
+                count={data?.counts?.stages?.[stage.key] ?? stage.count}
                 title={stage.description}
                 onClick={() => toggleStage(stage.key)}
-                className={classNames(
-                  "inline-flex items-center gap-2 border px-3 py-1.5 text-sm font-medium",
-                  params.stage.includes(stage.key) ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white",
-                )}
-              >
-                {stage.shortLabel}
-                <span className="text-xs opacity-70">{stage.count}</span>
-              </button>
+              />
             ))}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => updateParams({ gap: [] })}
-              className={classNames(
-                "border px-3 py-1.5 text-sm font-medium",
-                params.gap.length === 0 ? "border-sky-700 bg-sky-700 text-white" : "border-slate-200 bg-white",
-              )}
-            >
-              Mọi gap
-            </button>
-            {GAP_OPTIONS.map((gap) => (
-              <button
-                key={gap.value}
-                type="button"
-                onClick={() => toggleGap(gap.value)}
-                className={classNames(
-                  "border px-3 py-1.5 text-sm font-medium",
-                  params.gap.includes(gap.value) ? "border-sky-700 bg-sky-700 text-white" : "border-slate-200 bg-white",
-                )}
-              >
-                {gap.label}
-              </button>
-            ))}
-          </div>
-        </section>
+          </section>
 
-        <section className="overflow-hidden border border-slate-200 bg-white">
-          {error ? (
-            <div className="flex h-64 flex-col items-center justify-center gap-2 text-sm text-red-600">
-              <Search className="size-6" />
-              {error}
-            </div>
-          ) : loading ? (
-            <div className="flex h-64 items-center justify-center text-sm text-slate-500">
-              <Loader2 className="mr-2 size-5 animate-spin" />
-              Đang tải dữ liệu
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1180px] border-collapse text-sm">
-                <thead className="bg-slate-100 text-left text-xs font-semibold text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2">Xe</th>
-                    <th className="px-3 py-2">Lead</th>
-                    <th className="px-3 py-2">SĐT</th>
-                    <th className="px-3 py-2">Gap</th>
-                    <th className="px-3 py-2">Giá mong muốn</th>
-                    <th className="px-3 py-2">Bid cao nhất</th>
-                    <th className="px-3 py-2">Dealer</th>
-                    <th className="px-3 py-2">Kiểm định</th>
-                    <th className="px-3 py-2">Last touch</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data?.leads.length ? (
-                    data.leads.map((lead) => (
-                      <tr
-                        key={lead.carId}
-                        onClick={() => setSelectedLead(lead)}
-                        className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
-                      >
-                        <td className="px-3 py-3">
-                          <div className="font-medium">{lead.carName}</div>
-                          <div className="text-xs text-slate-500">
-                            {lead.location || "-"} · <CalendarDays className="inline size-3" /> {formatDateTime(lead.createdAt)}
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="font-medium">{lead.leadName}</div>
-                          <div className="text-xs text-slate-500">{lead.picName}</div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              copyPhone(lead.phone);
-                            }}
-                            className="inline-flex items-center gap-1 border border-slate-200 px-2 py-1 hover:bg-white"
-                          >
-                            <Phone className="size-3" />
-                            {lead.phone || "-"}
-                            {lead.phone && <Clipboard className="size-3 text-slate-400" />}
-                          </button>
-                        </td>
-                        <td className="px-3 py-3 font-medium">{lead.gapLabel}</td>
-                        <td className="px-3 py-3">{lead.priceCustomerLabel}</td>
-                        <td className="px-3 py-3">{lead.highestBidLabel}</td>
-                        <td className="px-3 py-3">{lead.highestDealerName || "-"}</td>
-                        <td className="px-3 py-3">{lead.inspected ? "Đã KĐ" : lead.booked ? "Đã hẹn" : "Chưa"}</td>
-                        <td className="px-3 py-3">
-                          <div className="font-medium">{formatLastTouch(lead.lastTouchHours, lead.lastTouchAt)}</div>
-                          <div className="text-xs text-slate-500">{stageLabel(lead.workStage)}</div>
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={9} className="h-40 text-center text-slate-500">
-                        Không có lead khớp bộ lọc.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+          <section className="space-y-2 border border-slate-200 bg-white p-3">
+            <CountFilterButton
+              active={params.gap.length === 0}
+              label="Mọi gap"
+              count={data?.counts?.total ?? data?.scanned ?? 0}
+              tone="sky"
+              onClick={() => updateParams({ gap: [] })}
+            />
+            {GAP_OPTIONS.map((gap) => (
+              <CountFilterButton
+                key={gap.value}
+                active={params.gap.includes(gap.value)}
+                label={gap.label}
+                count={data?.counts?.gaps?.[gap.value] ?? 0}
+                tone="sky"
+                onClick={() => toggleGap(gap.value)}
+              />
+            ))}
+          </section>
+
+          <section className="space-y-2 border border-slate-200 bg-white p-3">
+            <CountFilterButton
+              active={params.hasImages}
+              label="Đã có ảnh"
+              count={data?.counts?.hasImages ?? 0}
+              tone="teal"
+              onClick={() => updateParams({ hasImages: !params.hasImages })}
+            />
+            <CountFilterButton
+              active={params.inspected}
+              label="Đã kiểm định"
+              count={data?.counts?.inspected ?? 0}
+              tone="teal"
+              onClick={() => updateParams({ inspected: !params.inspected })}
+            />
+          </section>
+        </aside>
+
+        <div className="min-w-0 space-y-4">
+          {data?.warnings?.includes("zalo_unavailable") && (
+            <div className="border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Không kết nối được dữ liệu Zalo trong lần tải này; nhóm stage dựa trên hội thoại có thể chưa chính xác.
             </div>
           )}
-        </section>
 
-        {data && data.totalPages > 1 && (
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              disabled={params.page <= 1}
-              onClick={() => updateParams({ page: params.page - 1 })}
-              className="border border-slate-200 bg-white px-3 py-2 text-sm disabled:opacity-50"
-            >
-              Trước
-            </button>
-            <span className="text-sm text-slate-500">
-              Trang {data.page}/{data.totalPages}
-            </span>
-            <button
-              type="button"
-              disabled={params.page >= data.totalPages}
-              onClick={() => updateParams({ page: params.page + 1 })}
-              className="border border-slate-200 bg-white px-3 py-2 text-sm disabled:opacity-50"
-            >
-              Sau
-            </button>
-          </div>
-        )}
+          <section className="overflow-hidden border border-slate-200 bg-white">
+            {error ? (
+              <div className="flex h-64 flex-col items-center justify-center gap-2 text-sm text-red-600">
+                <Search className="size-6" />
+                {error}
+              </div>
+            ) : loading ? (
+              <div className="flex h-64 items-center justify-center text-sm text-slate-500">
+                <Loader2 className="mr-2 size-5 animate-spin" />
+                Đang tải dữ liệu
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1180px] border-collapse text-sm">
+                  <thead className="bg-slate-100 text-left text-xs font-semibold text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Xe</th>
+                      <th className="px-3 py-2">Lead</th>
+                      <th className="px-3 py-2">SĐT</th>
+                      <th className="px-3 py-2">Gap</th>
+                      <th className="px-3 py-2">Giá mong muốn</th>
+                      <th className="px-3 py-2">Bid cao nhất</th>
+                      <th className="px-3 py-2">Dealer</th>
+                      <th className="px-3 py-2">Ảnh</th>
+                      <th className="px-3 py-2">Kiểm định</th>
+                      <th className="px-3 py-2">Last touch</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data?.leads.length ? (
+                      data.leads.map((lead) => (
+                        <tr
+                          key={lead.carId}
+                          onClick={() => setSelectedLead(lead)}
+                          className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
+                        >
+                          <td className="px-3 py-3">
+                            <div className="font-medium">{lead.carName}</div>
+                            <div className="text-xs text-slate-500">
+                              {lead.location || "-"} · <CalendarDays className="inline size-3" /> {formatDateTime(lead.createdAt)}
+                            </div>
+                          </td>
+                          <td className="px-3 py-3">
+                            <div className="font-medium">{lead.leadName}</div>
+                            <div className="text-xs text-slate-500">{lead.picName}</div>
+                          </td>
+                          <td className="px-3 py-3">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                copyPhone(lead.phone);
+                              }}
+                              className="inline-flex items-center gap-1 border border-slate-200 px-2 py-1 hover:bg-white"
+                            >
+                              <Phone className="size-3" />
+                              {lead.phone || "-"}
+                              {lead.phone && <Clipboard className="size-3 text-slate-400" />}
+                            </button>
+                          </td>
+                          <td className="px-3 py-3 font-medium">{lead.gapLabel}</td>
+                          <td className="px-3 py-3">{lead.priceCustomerLabel}</td>
+                          <td className="px-3 py-3">{lead.highestBidLabel}</td>
+                          <td className="px-3 py-3">{lead.highestDealerName || "-"}</td>
+                          <td className="px-3 py-3">
+                            {lead.hasImages ? (
+                              <span className="inline-flex items-center gap-1 text-teal-700">
+                                <Image className="size-3" />
+                                Có
+                              </span>
+                            ) : (
+                              "Chưa"
+                            )}
+                          </td>
+                          <td className="px-3 py-3">{lead.inspected ? "Đã KĐ" : lead.booked ? "Đã hẹn" : "Chưa"}</td>
+                          <td className="px-3 py-3">
+                            <div className="font-medium">{formatLastTouch(lead.lastTouchHours, lead.lastTouchAt)}</div>
+                            <div className="text-xs text-slate-500">{stageLabel(lead.workStage)}</div>
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={10} className="h-40 text-center text-slate-500">
+                          Không có lead khớp bộ lọc.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          {data && data.totalPages > 1 && (
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={params.page <= 1}
+                onClick={() => updateParams({ page: params.page - 1 })}
+                className="border border-slate-200 bg-white px-3 py-2 text-sm disabled:opacity-50"
+              >
+                Trước
+              </button>
+              <span className="text-sm text-slate-500">
+                Trang {data.page}/{data.totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={params.page >= data.totalPages}
+                onClick={() => updateParams({ page: params.page + 1 })}
+                className="border border-slate-200 bg-white px-3 py-2 text-sm disabled:opacity-50"
+              >
+                Sau
+              </button>
+            </div>
+          )}
+        </div>
       </main>
 
       {selectedLead && (
