@@ -57,4 +57,33 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
       thumbUrl: null,
     });
   });
+
+  it("does not treat Zalo contact cards as customer car photos", () => {
+    const contactCardJson = JSON.stringify({
+      title: "Haiqm đã đồng ý kết bạn",
+      description: "Hai bên đã có thể nhắn tin với nhau",
+      href: "https://res-zalo.zadn.vn/some/contact-card.png",
+      thumb: "https://res-zalo.zadn.vn/some/contact-card.png",
+      params: JSON.stringify({
+        actions: [],
+        header: {},
+        layoutType: 0,
+        notifyTxt: "Đã đồng ý kết bạn",
+      }),
+      type: "0",
+    });
+
+    expect(
+      mapZaloMessageForSaleLeadDetail({
+        msg_id: "msg-3",
+        content: contactCardJson,
+        is_self: false,
+        dateAction: "2026-09-04T04:00:00.000Z",
+        msg_type: "chat.ecard",
+      }),
+    ).toMatchObject({
+      imageUrl: null,
+      thumbUrl: null,
+    });
+  });
 });

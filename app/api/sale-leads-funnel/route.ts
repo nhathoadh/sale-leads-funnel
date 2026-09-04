@@ -254,6 +254,12 @@ export async function GET(request: Request) {
                    AND m.content IS NOT NULL
                    AND m.content LIKE '{%'
                    AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
+                   AND (
+                     m.content LIKE '%"width"%'
+                     AND m.content LIKE '%"height"%'
+                     OR m.content LIKE '%https://photo-%'
+                     OR m.content LIKE '%https://photo.%'
+                   )
                ) AS customer_image_message_count,
                MAX(m.created_at) AS last_message_at,
                MAX(m.created_at) FILTER (WHERE m.is_self = false) AS last_customer_at,

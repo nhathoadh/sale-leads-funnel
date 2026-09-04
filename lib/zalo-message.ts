@@ -26,9 +26,14 @@ export function tryParseImageMessage(content: string | null | undefined): Parsed
           /* params hỏng → bỏ qua, ảnh vẫn hiện được */
         }
       }
+      const href = String(parsed.hd || parsed.href)
+      const thumb = String(parsed.thumb || parsed.href)
+      const hasMediaDimensions = Number(params?.width ?? 0) > 0 && Number(params?.height ?? 0) > 0
+      const isZaloPhotoHost = /^https:\/\/photo[-.]/.test(href) || /^https:\/\/photo[-.]/.test(thumb)
+      if (!hasMediaDimensions && !isZaloPhotoHost) return null
       return {
-        href: parsed.hd || parsed.href,
-        thumb: parsed.thumb || parsed.href,
+        href,
+        thumb,
         group_layout_id: params?.group_layout_id,
       }
     }
