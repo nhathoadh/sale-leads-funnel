@@ -1,4 +1,6 @@
 export type SaleLeadWorkStage =
+  | "failed"
+  | "delayed"
   | "no_zalo"
   | "need_contact"
   | "need_images"
@@ -8,7 +10,7 @@ export type SaleLeadWorkStage =
   | "need_post_inspection_quote"
   | "follow_up_after_quote";
 
-export type SaleLeadGapBucket = "lt5" | "5_10" | "gt10" | "no_price" | "closed";
+export type SaleLeadGapBucket = "lt5" | "5_10" | "gt10" | "no_price";
 
 export interface SaleLeadFilterableRow {
   workStage: SaleLeadWorkStage;
@@ -45,6 +47,7 @@ export interface AgentPricingEvents {
 
 export interface SaleLeadClassifierInput {
   crmStage?: string | null;
+  intention?: string | null;
   hasZaloChat: boolean;
   customerMessageCount: number;
   hasEnoughImages: boolean;
@@ -70,6 +73,18 @@ export interface SaleLeadStageConfig {
 }
 
 export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
+  {
+    key: "failed",
+    label: "Thất bại",
+    shortLabel: "Thất bại",
+    description: "Lead có CRM stage FAILED.",
+  },
+  {
+    key: "delayed",
+    label: "Hoãn bán",
+    shortLabel: "Hoãn bán",
+    description: "Lead có intention DELAY và chưa bị FAILED.",
+  },
   {
     key: "need_contact",
     label: "Cần liên hệ",
@@ -120,9 +135,9 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
   },
 ];
 
-const GAP_BUCKETS: SaleLeadGapBucket[] = ["lt5", "5_10", "gt10", "no_price", "closed"];
+const GAP_BUCKETS: SaleLeadGapBucket[] = ["lt5", "5_10", "gt10", "no_price"];
 
-const TERMINAL_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID", "FAILED"]);
+const TERMINAL_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID"]);
 const OFFER_EVENT_TYPES = new Set(["T_AGENT_FIRST_VUCAR_OFFER", "T_AGENT_VUCAR_OFFER_SUBSEQUENT"]);
 
 function parseTimestamp(value: string | null | undefined): number | null {
@@ -177,7 +192,10 @@ export function hasQuotedAfter(quoteTimestamps: string[], anchorTimestamp: strin
 
 export function classifySaleLeadStage(input: SaleLeadClassifierInput): SaleLeadWorkStage | null {
   const crmStage = String(input.crmStage ?? "").toUpperCase();
+  const intention = String(input.intention ?? "").toUpperCase();
+  if (crmStage === "FAILED") return "failed";
   if (TERMINAL_CRM_STAGES.has(crmStage)) return null;
+  if (intention === "DELAY") return "delayed";
 
   if (!input.hasZaloChat) return "no_zalo";
   if (input.customerMessageCount <= 0) return "need_contact";
@@ -215,7 +233,6 @@ export function calculateGapPercent(priceCustomer: number | null | undefined, hi
 export function getGapBucket(priceCustomer: number | null | undefined, highestBid: number | null | undefined): SaleLeadGapBucket {
   const gapPercent = calculateGapPercent(priceCustomer, highestBid);
   if (gapPercent === null) return "no_price";
-  if (gapPercent <= 0) return "closed";
   if (gapPercent < 5) return "lt5";
   if (gapPercent <= 10) return "5_10";
   return "gt10";

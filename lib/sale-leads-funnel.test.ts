@@ -4,6 +4,7 @@ import {
   calculateGapPercent,
   classifySaleLeadStage,
   filterSaleLeadRows,
+  getGapBucket,
   getSaleLeadFilterCounts,
   getQuoteTimestamps,
   hasQuotedAfter,
@@ -132,9 +133,20 @@ describe("classifySaleLeadStage", () => {
     ).toBe("follow_up_after_quote");
   });
 
-  it("excludes terminal CRM stages from active work stages", () => {
-    expect(classifySaleLeadStage(lead({ crmStage: "FAILED" }))).toBe(null);
+  it("puts failed leads into the failed funnel before any other stage", () => {
+    expect(classifySaleLeadStage(lead({ crmStage: "FAILED", hasEnoughImages: false }))).toBe("failed");
+  });
+
+  it("puts delayed leads into the delayed funnel unless they already failed", () => {
+    expect(classifySaleLeadStage(lead({ intention: "DELAY" } as Partial<SaleLeadClassifierInput>))).toBe("delayed");
+    expect(
+      classifySaleLeadStage(lead({ crmStage: "FAILED", intention: "DELAY" } as Partial<SaleLeadClassifierInput>)),
+    ).toBe("failed");
+  });
+
+  it("still excludes won and deposited CRM stages from active work stages", () => {
     expect(classifySaleLeadStage(lead({ crmStage: "DEPOSIT_PAID" }))).toBe(null);
+    expect(classifySaleLeadStage(lead({ crmStage: "COMPLETED" }))).toBe(null);
   });
 });
 
@@ -147,21 +159,28 @@ describe("calculateGapPercent", () => {
   it("returns zero when the bid reaches or exceeds the customer price", () => {
     expect(calculateGapPercent(500_000_000, 510_000_000)).toBe(0);
   });
+
+  it("groups full-price or above-price bids into the lt5 bucket", () => {
+    expect(getGapBucket(500_000_000, 500_000_000)).toBe("lt5");
+    expect(getGapBucket(500_000_000, 510_000_000)).toBe("lt5");
+  });
 });
 
 describe("sale lead list filters", () => {
-  const rows: SaleLeadFilterableRow[] = [
+  const rows = [
     { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false },
     { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false },
     { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true },
-    { workStage: "follow_up_after_quote", gapBucket: "closed", hasImages: true, inspected: true },
-  ];
+    { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true },
+    { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false },
+    { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false },
+  ] as SaleLeadFilterableRow[];
 
   it("filters leads by images and inspection status in addition to stage and gap", () => {
     expect(
       filterSaleLeadRows(rows, {
         stages: ["need_quote", "follow_up_after_quote"],
-        gaps: ["5_10", "closed"],
+        gaps: ["5_10", "lt5"],
         hasImages: true,
         inspected: true,
       }),
@@ -172,8 +191,10 @@ describe("sale lead list filters", () => {
 
   it("counts filter buttons from the full unfiltered row set", () => {
     expect(getSaleLeadFilterCounts(rows)).toEqual({
-      total: 4,
+      total: 6,
       stages: {
+        failed: 1,
+        delayed: 1,
         need_contact: 1,
         need_images: 1,
         need_price_source: 0,
@@ -184,11 +205,10 @@ describe("sale lead list filters", () => {
         no_zalo: 0,
       },
       gaps: {
-        lt5: 1,
+        lt5: 2,
         "5_10": 1,
-        gt10: 0,
-        no_price: 1,
-        closed: 1,
+        gt10: 1,
+        no_price: 2,
       },
       hasImages: 3,
       inspected: 2,

@@ -357,6 +357,7 @@ export async function GET(request: Request) {
         const hasEnoughImagesForStage = hasEnoughImages(row.additional_images, summaryHadImage) || customerZaloImageCount > 0;
         const classifierInput = {
           crmStage: row.stage,
+          intention: row.intention,
           hasZaloChat: relationCount > 0,
           customerMessageCount,
           hasEnoughImages: hasEnoughImagesForStage,

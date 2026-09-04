@@ -149,7 +149,6 @@ const GAP_OPTIONS: Array<{ value: SaleLeadGapBucket; label: string }> = [
   { value: "lt5", label: "<5%" },
   { value: "5_10", label: "5-10%" },
   { value: "gt10", label: ">10%" },
-  { value: "closed", label: "Đủ giá" },
   { value: "no_price", label: "Chưa có giá" },
 ];
 
