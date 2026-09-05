@@ -685,20 +685,23 @@ function FunnelClient() {
                                 event.stopPropagation();
                                 copyPhone(lead.phone);
                               }}
-                              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-900 shadow-sm transition hover:border-sky-200 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                              className="group inline-flex items-center gap-1.5 rounded-md px-0.5 py-0.5 text-xs font-semibold text-slate-700 transition hover:bg-sky-50 hover:text-sky-800 focus:outline-none focus:ring-2 focus:ring-sky-100"
                               title={lead.phone ? "Copy số điện thoại" : "Không có số điện thoại"}
                             >
-                              <Phone className="size-3" />
+                              <Phone className="size-3 text-slate-400 group-hover:text-sky-600" />
                               {lead.phone || "-"}
                               {lead.phone &&
                                 (copiedPhone === lead.phone ? (
                                   <Check className="size-3 text-emerald-600" />
                                 ) : (
-                                  <Clipboard className="size-3 text-slate-400" />
+                                  <Clipboard className="size-3 text-slate-300 group-hover:text-sky-500" />
                                 ))}
                             </button>
-                            <div className="mt-1.5 font-medium text-slate-700">{lead.leadName}</div>
-                            <div className="text-xs text-slate-500">{lead.picName}</div>
+                            <div className="mt-1 flex max-w-[220px] items-center gap-1.5 text-sm">
+                              <span className="truncate font-medium text-slate-800">{lead.leadName}</span>
+                              <span className="shrink-0 text-slate-300">/</span>
+                              <span className="truncate text-xs text-slate-500">{lead.picName}</span>
+                            </div>
                           </td>
                           <td className="px-3 py-3">
                             <StageBadge stage={lead.workStage} />

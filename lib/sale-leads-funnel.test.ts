@@ -11,6 +11,7 @@ import {
   getQuoteTimestamps,
   getSaleLeadStageTone,
   hasQuotedAfter,
+  hasVehicleImagesFromSources,
   summarizeDealerBids,
   type SaleLeadClassifierInput,
   type SaleLeadFilterableRow,
@@ -19,6 +20,7 @@ import {
 function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassifierInput {
   return {
     crmStage: "NEGOTIATION",
+    firstPaymentDate: null,
     hasZaloChat: true,
     customerMessageCount: 2,
     hasEnoughImages: true,
@@ -158,7 +160,28 @@ describe("classifySaleLeadStage", () => {
     ).toBe("follow_up_after_quote");
   });
 
-  it("puts failed leads into the failed funnel before any other stage", () => {
+  it("puts successful paid leads into the success funnel before failed or delayed routing", () => {
+    expect(
+      classifySaleLeadStage(
+        lead({
+          crmStage: "COMPLETED",
+          intention: "DELAY",
+          firstPaymentDate: "2026-09-05T03:00:00.000Z",
+          hasEnoughImages: false,
+        } as Partial<SaleLeadClassifierInput>),
+      ),
+    ).toBe("success");
+    expect(
+      classifySaleLeadStage(
+        lead({
+          crmStage: "DEPOSIT_PAID",
+          firstPaymentDate: "2026-09-05T03:00:00.000Z",
+        } as Partial<SaleLeadClassifierInput>),
+      ),
+    ).toBe("success");
+  });
+
+  it("puts failed leads into the failed funnel before delayed leads", () => {
     expect(classifySaleLeadStage(lead({ crmStage: "FAILED", hasEnoughImages: false }))).toBe("failed");
   });
 
@@ -169,14 +192,49 @@ describe("classifySaleLeadStage", () => {
     ).toBe("failed");
   });
 
-  it("still excludes won and deposited CRM stages from active work stages", () => {
+  it("does not put won or deposited CRM stages into success without first payment date", () => {
     expect(classifySaleLeadStage(lead({ crmStage: "DEPOSIT_PAID" }))).toBe(null);
     expect(classifySaleLeadStage(lead({ crmStage: "COMPLETED" }))).toBe(null);
   });
 });
 
+describe("hasVehicleImagesFromSources", () => {
+  it("does not treat paper-only uploads as vehicle images for stage routing", () => {
+    const hasVehicleImages = hasVehicleImagesFromSources({
+      additionalImages: { paper: [{ url: "https://example.com/dang-kiem.jpg" }], outside: [] },
+      customerZaloImageCount: 0,
+      summaryHadImage: false,
+    });
+
+    expect(hasVehicleImages).toBe(false);
+    expect(classifySaleLeadStage(lead({ hasEnoughImages: hasVehicleImages }))).toBe("need_images");
+  });
+
+  it("lets a lead move past image collection when the car image exists in storage", () => {
+    const hasVehicleImages = hasVehicleImagesFromSources({
+      additionalImages: { paper: [], outside: [{ url: "https://example.com/car.jpg" }] },
+      customerZaloImageCount: 0,
+      summaryHadImage: false,
+    });
+
+    expect(hasVehicleImages).toBe(true);
+    expect(classifySaleLeadStage(lead({ hasEnoughImages: hasVehicleImages }))).toBe("need_quote");
+  });
+
+  it("lets a lead move past image collection when the customer sent a Zalo image", () => {
+    const hasVehicleImages = hasVehicleImagesFromSources({
+      additionalImages: { paper: [] },
+      customerZaloImageCount: 1,
+      summaryHadImage: false,
+    });
+
+    expect(hasVehicleImages).toBe(true);
+    expect(classifySaleLeadStage(lead({ hasEnoughImages: hasVehicleImages }))).toBe("need_quote");
+  });
+});
+
 describe("sale lead stage config", () => {
-  it("orders operational stages before delayed, failed, and no-zalo buckets", () => {
+  it("orders operational stages before delayed, failed, success, and no-zalo buckets", () => {
     expect(SALE_LEAD_STAGE_CONFIG.map((stage) => stage.key)).toEqual([
       "need_contact",
       "need_images",
@@ -187,6 +245,7 @@ describe("sale lead stage config", () => {
       "follow_up_after_quote",
       "delayed",
       "failed",
+      "success",
       "no_zalo",
     ]);
   });
@@ -200,6 +259,7 @@ describe("sale lead stage config", () => {
 
     expect(getSaleLeadStageTone("need_contact").badgeClass).toContain("bg-sky-50");
     expect(getSaleLeadStageTone("failed").badgeClass).toContain("bg-rose-50");
+    expect(getSaleLeadStageTone("success").badgeClass).toContain("bg-lime-50");
     expect(getSaleLeadStageTone("no_zalo").badgeClass).toContain("bg-slate-50");
   });
 });
@@ -255,6 +315,7 @@ describe("sale lead list filters", () => {
     { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: true },
     { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false },
     { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: true },
+    { workStage: "success", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false },
     { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false, noHumanTouch: false, underTwoBids: false },
   ] as SaleLeadFilterableRow[];
 
@@ -275,10 +336,11 @@ describe("sale lead list filters", () => {
 
   it("counts filter buttons from the full unfiltered row set", () => {
     expect(getSaleLeadFilterCounts(rows)).toEqual({
-      total: 6,
+      total: 7,
       stages: {
         failed: 1,
         delayed: 1,
+        success: 1,
         need_contact: 1,
         need_images: 1,
         need_price_source: 0,
@@ -289,13 +351,13 @@ describe("sale lead list filters", () => {
         no_zalo: 0,
       },
       gaps: {
-        lt5: 2,
+        lt5: 3,
         "5_10": 1,
         gt10: 1,
         no_price: 2,
       },
-      hasImages: 3,
-      inspected: 2,
+      hasImages: 4,
+      inspected: 3,
       noHumanTouch: 2,
       underTwoBids: 2,
     });
@@ -303,7 +365,7 @@ describe("sale lead list filters", () => {
 
   it("recounts other filter groups against the currently selected filters", () => {
     expect(getSaleLeadFilterFacets(rows, { hasImages: true })).toMatchObject({
-      total: 3,
+      total: 4,
       stages: {
         need_contact: 0,
         need_images: 1,
@@ -314,10 +376,11 @@ describe("sale lead list filters", () => {
         follow_up_after_quote: 1,
         delayed: 0,
         failed: 0,
+        success: 1,
         no_zalo: 0,
       },
       gaps: {
-        lt5: 1,
+        lt5: 2,
         "5_10": 1,
         gt10: 0,
         no_price: 1,
@@ -325,10 +388,10 @@ describe("sale lead list filters", () => {
     });
 
     expect(getSaleLeadFilterFacets(rows, { gaps: ["lt5"] })).toMatchObject({
-      total: 2,
+      total: 3,
       status: {
-        hasImages: 1,
-        inspected: 1,
+        hasImages: 2,
+        inspected: 2,
         noHumanTouch: 1,
         underTwoBids: 0,
       },

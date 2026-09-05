@@ -6,12 +6,14 @@ import {
   SALE_LEAD_STAGE_CONFIG,
   calculateGapPercent,
   classifySaleLeadStage,
+  countStoredVehicleImages,
   filterSaleLeadRows,
   formatMillionShort,
   getSaleLeadFilterCounts,
   getSaleLeadFilterFacets,
   getGapBucket,
   getQuoteTimestamps,
+  hasVehicleImagesFromSources,
   isInInspectionRegion,
   summarizeDealerBids,
   type AgentPricingEvents,
@@ -68,22 +70,6 @@ function snapshotsFromResult(value: unknown): any[] {
 function latestSnapshot(value: unknown): any {
   const snapshots = snapshotsFromResult(value);
   return snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
-}
-
-function imageCount(additionalImages: unknown) {
-  const parsed = parseJson(additionalImages) ?? {};
-  let count = 0;
-  for (const value of Object.values(parsed)) {
-    if (Array.isArray(value)) count += value.length;
-  }
-  return count;
-}
-
-function hasEnoughImages(additionalImages: unknown, summaryHadImage: boolean) {
-  const parsed = parseJson(additionalImages) ?? {};
-  const hasOutside = Array.isArray(parsed.outside) && parsed.outside.length > 0;
-  const hasPaper = Array.isArray(parsed.paper) && parsed.paper.length > 0;
-  return (hasOutside && hasPaper) || summaryHadImage;
 }
 
 function normalizeQuoteTsFromSnapshots(snapshots: any[]) {
@@ -203,6 +189,7 @@ export async function GET(request: Request) {
          ss.price_customer,
          ss.price_highest_bid,
          ss.price_sold,
+         ss.first_payment_date,
          ss.qualified,
          ss.intention,
          ss.negotiation_ability
@@ -238,13 +225,18 @@ export async function GET(request: Request) {
                COUNT(m.msg_id) FILTER (
                  WHERE m.is_self = false
                    AND m.content IS NOT NULL
-                   AND m.content LIKE '{%'
-                   AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
                    AND (
-                     m.content LIKE '%"width"%'
-                     AND m.content LIKE '%"height"%'
-                     OR m.content LIKE '%https://photo-%'
-                     OR m.content LIKE '%https://photo.%'
+                     m.msg_type = 'chat.photo'
+                     OR (
+                       m.content LIKE '{%'
+                       AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
+                       AND (
+                         (m.content LIKE '%"width"%' AND m.content LIKE '%"height"%')
+                         OR m.content LIKE '%https://photo-%'
+                         OR m.content LIKE '%https://photo.%'
+                         OR m.content LIKE '%zpc.zdn.vn%'
+                       )
+                     )
                    )
                ) AS customer_image_message_count,
                MAX(m.created_at) AS last_message_at,
@@ -354,16 +346,20 @@ export async function GET(request: Request) {
         const noHumanTouch = relationCount > 0 && humanMessageCount <= 0;
         const underTwoBids = hasCustomerAndDealerPrice && dealerBidDealerCount > 0 && dealerBidDealerCount < 2;
         const gapPercent = calculateGapPercent(priceCustomer, fallbackHighestBid);
-        const storedImageCount = imageCount(row.additional_images);
+        const storedImageCount = countStoredVehicleImages(row.additional_images);
         const summaryHadImage = latest?.had_car_image === true || latest?.had_image === true;
-        const hasImages = storedImageCount > 0 || customerZaloImageCount > 0 || summaryHadImage;
-        const hasEnoughImagesForStage = hasEnoughImages(row.additional_images, summaryHadImage) || customerZaloImageCount > 0;
+        const hasImages = hasVehicleImagesFromSources({
+          additionalImages: row.additional_images,
+          customerZaloImageCount,
+          summaryHadImage,
+        });
         const classifierInput = {
           crmStage: row.stage,
+          firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
           intention: row.intention,
           hasZaloChat: relationCount > 0,
           customerMessageCount,
-          hasEnoughImages: hasEnoughImagesForStage,
+          hasEnoughImages: hasImages,
           inInspectionRegion: isInInspectionRegion(row.location ?? latest?.location),
           hasInspectionBooking: booked,
           isInspected: inspected,
@@ -402,6 +398,7 @@ export async function GET(request: Request) {
           sku: row.sku,
           createdAt: row.car_created_at ?? row.lead_created_at,
           crmStage: row.stage || "UNDEFINED",
+          firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
           workStage,
           priceCustomer,
           highestBid: fallbackHighestBid,

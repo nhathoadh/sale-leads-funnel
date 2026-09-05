@@ -1,6 +1,7 @@
 export type SaleLeadWorkStage =
   | "failed"
   | "delayed"
+  | "success"
   | "no_zalo"
   | "need_contact"
   | "need_images"
@@ -65,6 +66,7 @@ export interface AgentPricingEvents {
 
 export interface SaleLeadClassifierInput {
   crmStage?: string | null;
+  firstPaymentDate?: string | null;
   intention?: string | null;
   hasZaloChat: boolean;
   customerMessageCount: number;
@@ -82,6 +84,12 @@ export interface SaleLeadClassifierInput {
   priceVucarOffered?: number | null;
   agentPricingEvents?: AgentPricingEvents | null;
   saleCompletedCallTs?: string[] | null;
+}
+
+export interface SaleLeadVehicleImageSources {
+  additionalImages: unknown;
+  customerZaloImageCount: number;
+  summaryHadImage: boolean;
 }
 
 export interface DealerBidLike {
@@ -117,7 +125,7 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
     key: "need_images",
     label: "Cần xin ảnh",
     shortLabel: "Xin ảnh",
-    description: "Khách đã phản hồi nhưng thiếu ảnh xe hoặc giấy tờ xe.",
+    description: "Khách đã phản hồi nhưng chưa có ảnh xe.",
   },
   {
     key: "need_price_source",
@@ -162,6 +170,12 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
     description: "Lead có CRM stage FAILED.",
   },
   {
+    key: "success",
+    label: "Thành công",
+    shortLabel: "Thành công",
+    description: "Lead đã đặt cọc hoặc hoàn tất và có ngày thanh toán đầu tiên.",
+  },
+  {
     key: "no_zalo",
     label: "Không có Zalo chat",
     shortLabel: "No Zalo",
@@ -170,6 +184,7 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
 ];
 
 const GAP_BUCKETS: SaleLeadGapBucket[] = ["lt5", "5_10", "gt10", "no_price"];
+const VEHICLE_IMAGE_BUCKETS = ["outside", "inside", "engine", "frame", "thumbnail"];
 
 const SALE_LEAD_STAGE_TONES: Record<SaleLeadWorkStage, SaleLeadStageTone> = {
   need_contact: { badgeClass: "border-sky-200 bg-sky-50 text-sky-700" },
@@ -181,6 +196,7 @@ const SALE_LEAD_STAGE_TONES: Record<SaleLeadWorkStage, SaleLeadStageTone> = {
   follow_up_after_quote: { badgeClass: "border-emerald-200 bg-emerald-50 text-emerald-700" },
   delayed: { badgeClass: "border-amber-200 bg-amber-50 text-amber-700" },
   failed: { badgeClass: "border-rose-200 bg-rose-50 text-rose-700" },
+  success: { badgeClass: "border-lime-200 bg-lime-50 text-lime-700" },
   no_zalo: { badgeClass: "border-slate-200 bg-slate-50 text-slate-600" },
 };
 
@@ -188,7 +204,36 @@ export function getSaleLeadStageTone(stage: SaleLeadWorkStage): SaleLeadStageTon
   return SALE_LEAD_STAGE_TONES[stage];
 }
 
+function parseJsonValue(value: unknown): any {
+  if (!value) return null;
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+export function countStoredVehicleImages(additionalImages: unknown): number {
+  const parsed = parseJsonValue(additionalImages) ?? {};
+  let count = 0;
+  for (const bucket of VEHICLE_IMAGE_BUCKETS) {
+    const value = parsed[bucket];
+    if (Array.isArray(value)) count += value.length;
+  }
+  return count;
+}
+
+export function hasVehicleImagesFromSources(sources: SaleLeadVehicleImageSources): boolean {
+  return (
+    countStoredVehicleImages(sources.additionalImages) > 0 ||
+    Number(sources.customerZaloImageCount ?? 0) > 0 ||
+    sources.summaryHadImage
+  );
+}
+
 const TERMINAL_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID"]);
+const SUCCESS_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID"]);
 const OFFER_EVENT_TYPES = new Set(["T_AGENT_FIRST_VUCAR_OFFER", "T_AGENT_VUCAR_OFFER_SUBSEQUENT"]);
 
 function parseTimestamp(value: string | null | undefined): number | null {
@@ -293,6 +338,7 @@ export function hasQuotedAfter(quoteTimestamps: string[], anchorTimestamp: strin
 export function classifySaleLeadStage(input: SaleLeadClassifierInput): SaleLeadWorkStage | null {
   const crmStage = String(input.crmStage ?? "").toUpperCase();
   const intention = String(input.intention ?? "").toUpperCase();
+  if (SUCCESS_CRM_STAGES.has(crmStage) && input.firstPaymentDate) return "success";
   if (crmStage === "FAILED") return "failed";
   if (TERMINAL_CRM_STAGES.has(crmStage)) return null;
   if (intention === "DELAY") return "delayed";
