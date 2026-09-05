@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapZaloMessageForSaleLeadDetail } from "@/lib/sale-leads-funnel-detail";
+import { groupDealerBidsByDealer, mapZaloMessageForSaleLeadDetail } from "@/lib/sale-leads-funnel-detail";
 
 describe("mapZaloMessageForSaleLeadDetail", () => {
   it("extracts Zalo photo URLs from JSON content", () => {
@@ -29,6 +29,8 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
       id: "msg-1",
       fromMe: false,
       sender: "Khách",
+      senderKind: "customer",
+      senderTag: "Khách",
       content: imageJson,
       at: "2026-09-04T03:00:00.000Z",
       type: "chat.photo",
@@ -43,6 +45,7 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
         msg_id: "msg-2",
         content: "Anh gửi giúp em ảnh đăng kiểm nhé",
         is_self: true,
+        source: "user",
         dateAction: "2026-09-04T04:00:00.000Z",
         msg_type: null,
       }),
@@ -50,6 +53,8 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
       id: "msg-2",
       fromMe: true,
       sender: "Vucar",
+      senderKind: "human",
+      senderTag: "Human",
       content: "Anh gửi giúp em ảnh đăng kiểm nhé",
       at: "2026-09-04T04:00:00.000Z",
       type: "text",
@@ -57,6 +62,24 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
       thumbUrl: null,
       callDurationSeconds: null,
       callDurationLabel: null,
+      callKind: null,
+    });
+  });
+
+  it("tags outbound bot messages as AI Agent", () => {
+    expect(
+      mapZaloMessageForSaleLeadDetail({
+        msg_id: "msg-bot",
+        content: "Em chào anh, em là trợ lý Vucar.",
+        is_self: true,
+        source: "bot",
+        dateAction: "2026-09-04T04:05:00.000Z",
+        msg_type: null,
+      }),
+    ).toMatchObject({
+      sender: "Vucar",
+      senderKind: "ai",
+      senderTag: "AI",
     });
   });
 
@@ -118,8 +141,113 @@ describe("mapZaloMessageForSaleLeadDetail", () => {
       type: "call",
       callDurationSeconds: 145,
       callDurationLabel: "2 phút 25 giây",
+      callKind: "completed",
       imageUrl: null,
       thumbUrl: null,
     });
+  });
+
+  it("renders Zalo missed calls as call messages instead of raw JSON", () => {
+    const missedCallJson = JSON.stringify({
+      title: "sendBubbleMessage",
+      description: "Cuộc gọi",
+      href: "",
+      thumb: "",
+      childnumber: 0,
+      action: "recommened.misscall",
+      params: JSON.stringify({
+        duration: 0,
+        reason: 1,
+        isCaller: 1,
+        isEnableCallback: 1,
+        calltype: 0,
+      }),
+    });
+
+    expect(
+      mapZaloMessageForSaleLeadDetail({
+        msg_id: "msg-5",
+        content: missedCallJson,
+        is_self: true,
+        dateAction: "2026-09-04T06:00:00.000Z",
+        msg_type: "chat.recommended",
+      }),
+    ).toMatchObject({
+      content: "Cuộc gọi nhỡ",
+      type: "call",
+      callDurationSeconds: 0,
+      callDurationLabel: null,
+      callKind: "missed",
+      imageUrl: null,
+      thumbUrl: null,
+    });
+  });
+});
+
+describe("groupDealerBidsByDealer", () => {
+  it("puts each dealer on one row with latest pre/post inspection prices", () => {
+    expect(
+      groupDealerBidsByDealer([
+        {
+          id: "old-pre",
+          dealerId: "dealer-a",
+          dealerName: "Hách Nguyễn",
+          price: 590_000_000,
+          priceLabel: "590M",
+          version: 1,
+          phase: "pre_inspection",
+          createdAt: "2026-08-04T10:00:00.000Z",
+          comment: null,
+        },
+        {
+          id: "new-pre",
+          dealerId: "dealer-a",
+          dealerName: "Hách Nguyễn",
+          price: 600_000_000,
+          priceLabel: "600M",
+          version: 1,
+          phase: "pre_inspection",
+          createdAt: "2026-08-04T10:27:00.000Z",
+          comment: null,
+        },
+        {
+          id: "post",
+          dealerId: "dealer-a",
+          dealerName: "Hách Nguyễn",
+          price: 550_000_000,
+          priceLabel: "550M",
+          version: 2,
+          phase: "post_inspection",
+          createdAt: "2026-08-27T02:40:00.000Z",
+          comment: null,
+        },
+        {
+          id: "post-only",
+          dealerId: "dealer-b",
+          dealerName: "Công Hội",
+          price: 590_000_000,
+          priceLabel: "590M",
+          version: 2,
+          phase: "post_inspection",
+          createdAt: "2026-08-27T04:56:00.000Z",
+          comment: null,
+        },
+      ]),
+    ).toEqual([
+      {
+        dealerId: "dealer-b",
+        dealerName: "Công Hội",
+        preInspection: null,
+        postInspection: expect.objectContaining({ price: 590_000_000, priceLabel: "590M" }),
+        diff: null,
+      },
+      {
+        dealerId: "dealer-a",
+        dealerName: "Hách Nguyễn",
+        preInspection: expect.objectContaining({ price: 600_000_000, priceLabel: "600M" }),
+        postInspection: expect.objectContaining({ price: 550_000_000, priceLabel: "550M" }),
+        diff: -50_000_000,
+      },
+    ]);
   });
 });

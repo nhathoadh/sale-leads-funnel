@@ -12,8 +12,9 @@ export interface ParsedImageMessage {
 }
 
 export interface ParsedCallMessage {
+  kind: "completed" | "missed"
   durationSeconds: number
-  durationLabel: string
+  durationLabel: string | null
 }
 
 function parseJson(value: string | null | undefined): any {
@@ -72,13 +73,23 @@ export function tryParseCallMessage(content: string | null | undefined): ParsedC
   const title = String(parsed.title ?? "")
   const description = String(parsed.description ?? "")
   const durationSeconds = Number(params?.duration)
+  const normalizedAction = action.replace(/^recommended\./, "recommened.")
 
   if (title !== "sendBubbleMessage") return null
-  if (action !== "recommened.calltime") return null
+  if (normalizedAction !== "recommened.calltime" && normalizedAction !== "recommened.misscall") return null
   if (!description.toLowerCase().includes("cuộc gọi") && !description.toLowerCase().includes("cuoc goi")) return null
   if (!Number.isFinite(durationSeconds) || durationSeconds < 0) return null
 
+  if (normalizedAction === "recommened.misscall") {
+    return {
+      kind: "missed",
+      durationSeconds: Math.floor(durationSeconds),
+      durationLabel: null,
+    }
+  }
+
   return {
+    kind: "completed",
     durationSeconds: Math.floor(durationSeconds),
     durationLabel: formatCallDuration(durationSeconds),
   }

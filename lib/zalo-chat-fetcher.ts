@@ -17,6 +17,7 @@ export interface ZaloChatMessage {
   content: string         // Alias of msg_content (legacy compat)
   is_self: boolean        // true = sent by Vucar PIC, false = customer
   display_name: string | null
+  source?: string | null // "bot" = AI Agent, "user" = human sale, "customer" = customer
   msg_type?: string | null // Zalo message kind: null=text, chat.photo, chat.video.msg, share.file, friend_request, webchat...
 }
 
@@ -50,7 +51,7 @@ export async function fetchZaloMessagesFromDb({
     const limitParam = `$${params.length}`
 
     const res = await vucarZaloQuery(
-      `SELECT m.msg_id, m.content, m.is_self, m.created_at, m.display_name, m.msg_type
+      `SELECT m.msg_id, m.content, m.is_self, m.created_at, m.display_name, m.source, m.msg_type
        FROM leads_relation lr
        JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
        ${whereClause}
@@ -75,6 +76,7 @@ export async function fetchZaloMessagesFromDb({
       content: row.content || "",
       is_self: Boolean(row.is_self),
       display_name: row.display_name || null,
+      source: row.source || null,
       msg_type: row.msg_type || null,
     }))
   } catch (err) {
@@ -92,7 +94,7 @@ export async function fetchZaloMessagesFromDb({
 export async function resolveMessageById(msgId: string): Promise<ZaloChatMessage | null> {
   try {
     const res = await vucarZaloQuery(
-      `SELECT msg_id, content, is_self, created_at, display_name
+      `SELECT msg_id, content, is_self, created_at, display_name, source
        FROM messages
        WHERE msg_id = $1
        LIMIT 1`,
@@ -110,6 +112,7 @@ export async function resolveMessageById(msgId: string): Promise<ZaloChatMessage
       content: row.content || "",
       is_self: Boolean(row.is_self),
       display_name: row.display_name || null,
+      source: row.source || null,
     }
   } catch (err) {
     console.error(`[zalo-chat-fetcher] resolveMessageById failed for msgId=${msgId}:`, err)

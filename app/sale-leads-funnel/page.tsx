@@ -1,12 +1,13 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowDownUp,
   CalendarDays,
-  Check,
   Clipboard,
+  FileText,
   Image,
   Loader2,
   MessageCircle,
@@ -22,6 +23,7 @@ import {
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
+import { groupDealerBidsByDealer } from "@/lib/sale-leads-funnel-detail";
 
 type SortKey = "last_touch_oldest" | "last_touch_newest" | "gap_asc" | "gap_desc" | "created_desc";
 
@@ -46,6 +48,11 @@ interface FunnelLead {
   hasImages: boolean;
   inspected: boolean;
   booked: boolean;
+  noHumanTouch: boolean;
+  underTwoBids: boolean;
+  humanMessageCount: number;
+  aiMessageCount: number;
+  dealerBidDealerCount: number;
   lastTouchAt: string | null;
   lastTouchHours: number | null;
   quoteTimestamps: string[];
@@ -64,6 +71,8 @@ interface FunnelResponse {
     gap: SaleLeadGapBucket[];
     hasImages?: boolean;
     inspected?: boolean;
+    noHumanTouch?: boolean;
+    underTwoBids?: boolean;
     sort: SortKey;
     page: number;
     perPage: number;
@@ -80,6 +89,8 @@ interface FunnelResponse {
     gaps: Record<SaleLeadGapBucket, number>;
     hasImages: number;
     inspected: number;
+    noHumanTouch: number;
+    underTwoBids: number;
   };
   stages: Array<(typeof SALE_LEAD_STAGE_CONFIG)[number] & { count: number }>;
   picOptions: Array<{ id: string; name: string }>;
@@ -94,7 +105,6 @@ interface LeadDetail {
     phone: string | null;
     additionalPhone: string | null;
     source: string | null;
-    customerFeedback?: string | null;
     picName: string;
     createdAt: string;
     carName: string;
@@ -106,10 +116,14 @@ interface LeadDetail {
     priceCustomer: number | null;
     priceHighestBid: number | null;
     priceSold: number | null;
+    failureReason: string | null;
     notes: string | null;
+    gmvFlowNoReason: string | null;
     qualified: string | null;
     intention: string | null;
     negotiationAbility: string | null;
+    e2eStatusReason: string | null;
+    customerFeedback?: string | null;
   };
   dealerBids: Array<{
     id: string;
@@ -135,6 +149,8 @@ interface LeadDetail {
     id: string;
     fromMe: boolean;
     sender: string;
+    senderKind: "ai" | "human" | "customer";
+    senderTag: string;
     content: string;
     at: string;
     type: string;
@@ -142,6 +158,7 @@ interface LeadDetail {
     thumbUrl: string | null;
     callDurationSeconds: number | null;
     callDurationLabel: string | null;
+    callKind: "completed" | "missed" | null;
   }>;
 }
 
@@ -185,6 +202,26 @@ function formatLastTouch(hours: number | null, at: string | null) {
   return `${Math.round(hours / 24)} ngày`;
 }
 
+function formatVnd(value: number | null | undefined) {
+  const amount = Number(value ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return "-";
+  return `${amount.toLocaleString("vi-VN")} đ`;
+}
+
+function formatDiff(value: number | null) {
+  if (value === null) return "-";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${Math.round(value / 1_000_000).toLocaleString("vi-VN")}M`;
+}
+
+function buildFailureHighlights(lead: LeadDetail["lead"]) {
+  return [
+    lead.gmvFlowNoReason ? { label: "GMV flow", value: lead.gmvFlowNoReason } : null,
+    lead.customerFeedback ? { label: "Khách phản hồi", value: lead.customerFeedback } : null,
+    lead.e2eStatusReason ? { label: "E2E", value: lead.e2eStatusReason } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>;
+}
+
 function setCsvParam(params: URLSearchParams, key: string, values: string[]) {
   if (values.length > 0) params.set(key, values.join(","));
   else params.delete(key);
@@ -194,12 +231,14 @@ function stageLabel(stage: SaleLeadWorkStage) {
   return SALE_LEAD_STAGE_CONFIG.find((item) => item.key === stage)?.label ?? stage;
 }
 
-function phaseLabel(phase: "pre_inspection" | "post_inspection") {
-  return phase === "post_inspection" ? "Sau KĐ" : "Trước KĐ";
-}
-
 function classNames(...items: Array<string | false | null | undefined>) {
   return items.filter(Boolean).join(" ");
+}
+
+function senderTagClass(kind: "ai" | "human" | "customer") {
+  if (kind === "ai") return "border-violet-200 bg-violet-50 text-violet-700";
+  if (kind === "human") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  return "border-slate-200 bg-white text-slate-500";
 }
 
 function CountFilterButton({
@@ -230,14 +269,18 @@ function CountFilterButton({
       title={title}
       onClick={onClick}
       className={classNames(
-        "flex h-9 w-full items-center justify-between gap-3 border px-3 text-left text-sm font-medium hover:bg-slate-50",
+        "flex h-8 min-w-0 items-center justify-between gap-2 border px-2 text-left text-xs font-medium hover:bg-slate-50",
         active ? activeClass : "border-slate-200 bg-white text-slate-800",
       )}
     >
       <span className="truncate">{label}</span>
-      <span className={classNames("shrink-0 text-xs", active ? "text-white/75" : "text-slate-400")}>{count}</span>
+      <span className={classNames("shrink-0 text-[11px]", active ? "text-white/75" : "text-slate-400")}>{count}</span>
     </button>
   );
+}
+
+function FilterTitle({ children }: { children: ReactNode }) {
+  return <div className="text-[11px] font-semibold text-slate-500">{children}</div>;
 }
 
 function FunnelClient() {
@@ -249,6 +292,8 @@ function FunnelClient() {
   const [selectedLead, setSelectedLead] = useState<FunnelLead | null>(null);
   const [detail, setDetail] = useState<LeadDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const dealerBidRows = useMemo(() => (detail ? groupDealerBidsByDealer(detail.dealerBids) : []), [detail]);
+  const failureHighlights = useMemo(() => (detail ? buildFailureHighlights(detail.lead) : []), [detail]);
 
   const params = useMemo(() => {
     const from = searchParams.get("from") || defaultFromInput();
@@ -258,9 +303,11 @@ function FunnelClient() {
     const gap = searchParams.get("gap")?.split(",").filter(Boolean) ?? [];
     const hasImages = searchParams.get("hasImages") === "true";
     const inspected = searchParams.get("inspected") === "true";
+    const noHumanTouch = searchParams.get("noHumanTouch") === "true";
+    const underTwoBids = searchParams.get("underTwoBids") === "true";
     const sort = (searchParams.get("sort") || "last_touch_oldest") as SortKey;
     const page = Number(searchParams.get("page") || 1);
-    return { from, to, pic, stage, gap, hasImages, inspected, sort, page };
+    return { from, to, pic, stage, gap, hasImages, inspected, noHumanTouch, underTwoBids, sort, page };
   }, [searchParams]);
 
   const updateParams = (patch: Partial<typeof params>) => {
@@ -277,6 +324,10 @@ function FunnelClient() {
     else next.delete("hasImages");
     if (merged.inspected) next.set("inspected", "true");
     else next.delete("inspected");
+    if (merged.noHumanTouch) next.set("noHumanTouch", "true");
+    else next.delete("noHumanTouch");
+    if (merged.underTwoBids) next.set("underTwoBids", "true");
+    else next.delete("underTwoBids");
     router.replace(`/sale-leads-funnel?${next.toString()}`);
   };
 
@@ -294,6 +345,8 @@ function FunnelClient() {
     setCsvParam(url.searchParams, "gap", params.gap);
     if (params.hasImages) url.searchParams.set("hasImages", "true");
     if (params.inspected) url.searchParams.set("inspected", "true");
+    if (params.noHumanTouch) url.searchParams.set("noHumanTouch", "true");
+    if (params.underTwoBids) url.searchParams.set("underTwoBids", "true");
 
     fetch(url.toString(), { signal: controller.signal })
       .then(async (response) => {
@@ -318,6 +371,8 @@ function FunnelClient() {
     params.gap.join(","),
     params.hasImages,
     params.inspected,
+    params.noHumanTouch,
+    params.underTwoBids,
     params.sort,
     params.page,
   ]);
@@ -378,36 +433,36 @@ function FunnelClient() {
         </div>
       </header>
 
-      <main className="grid gap-4 px-5 py-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <aside className="space-y-3 lg:sticky lg:top-[73px] lg:max-h-[calc(100vh-92px)] lg:overflow-y-auto">
-          <section className="space-y-3 border border-slate-200 bg-white p-3">
+      <main className="grid gap-4 px-5 py-4 lg:grid-cols-[248px_minmax(0,1fr)]">
+        <aside className="space-y-2 lg:sticky lg:top-[73px] lg:max-h-[calc(100vh-92px)] lg:overflow-y-auto">
+          <section className="space-y-2 border border-slate-200 bg-white p-2.5">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold">Bộ lọc</div>
               <button
                 type="button"
                 onClick={() => updateParams({})}
-                className="inline-flex size-8 items-center justify-center border border-slate-200 text-slate-600 hover:bg-slate-50"
+                className="inline-flex size-7 items-center justify-center border border-slate-200 text-slate-600 hover:bg-slate-50"
                 aria-label="Tải lại"
                 title="Tải lại"
               >
-                <RefreshCw className="size-4" />
+                <RefreshCw className="size-3.5" />
               </button>
             </div>
 
             <label className="grid gap-1 text-xs font-medium text-slate-500">
               Khoảng ngày
-              <div className="grid gap-2">
+              <div className="grid grid-cols-2 gap-1.5">
                 <input
                   type="date"
                   value={params.from}
                   onChange={(event) => updateParams({ from: event.target.value })}
-                  className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+                  className="h-8 min-w-0 border border-slate-200 px-1.5 text-xs text-slate-900"
                 />
                 <input
                   type="date"
                   value={params.to}
                   onChange={(event) => updateParams({ to: event.target.value })}
-                  className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+                  className="h-8 min-w-0 border border-slate-200 px-1.5 text-xs text-slate-900"
                 />
               </div>
             </label>
@@ -417,7 +472,7 @@ function FunnelClient() {
               <select
                 value={params.pic[0] || ""}
                 onChange={(event) => updateParams({ pic: event.target.value ? [event.target.value] : [] })}
-                className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+                className="h-8 border border-slate-200 px-2 text-xs text-slate-900"
               >
                 <option value="">Tất cả PIC</option>
                 {data?.picOptions.map((pic) => (
@@ -433,7 +488,7 @@ function FunnelClient() {
               <select
                 value={params.sort}
                 onChange={(event) => updateParams({ sort: event.target.value as SortKey })}
-                className="h-9 border border-slate-200 px-2 text-sm text-slate-900"
+                className="h-8 border border-slate-200 px-2 text-xs text-slate-900"
               >
                 {SORT_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -444,61 +499,104 @@ function FunnelClient() {
             </label>
           </section>
 
-          <section className="space-y-2 border border-slate-200 bg-white p-3">
+          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
             <CountFilterButton
-              active={params.stage.length === 0 && params.gap.length === 0 && !params.hasImages && !params.inspected}
+              active={
+                params.stage.length === 0 &&
+                params.gap.length === 0 &&
+                !params.hasImages &&
+                !params.inspected &&
+                !params.noHumanTouch &&
+                !params.underTwoBids
+              }
               label="Tất cả"
               count={data?.counts?.total ?? data?.scanned ?? 0}
-              onClick={() => updateParams({ stage: [], gap: [], hasImages: false, inspected: false })}
+              onClick={() =>
+                updateParams({
+                  stage: [],
+                  gap: [],
+                  hasImages: false,
+                  inspected: false,
+                  noHumanTouch: false,
+                  underTwoBids: false,
+                })
+              }
             />
-            <div className="h-px bg-slate-100" />
-            {data?.stages.map((stage) => (
-              <CountFilterButton
-                key={stage.key}
-                active={params.stage.includes(stage.key)}
-                label={stage.shortLabel}
-                count={data?.counts?.stages?.[stage.key] ?? stage.count}
-                title={stage.description}
-                onClick={() => toggleStage(stage.key)}
-              />
-            ))}
           </section>
 
-          <section className="space-y-2 border border-slate-200 bg-white p-3">
-            <CountFilterButton
-              active={params.gap.length === 0}
-              label="Mọi gap"
-              count={data?.counts?.total ?? data?.scanned ?? 0}
-              tone="sky"
-              onClick={() => updateParams({ gap: [] })}
-            />
-            {GAP_OPTIONS.map((gap) => (
+          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
+            <FilterTitle>Trạng thái</FilterTitle>
+            <div className="grid grid-cols-2 gap-1.5">
               <CountFilterButton
-                key={gap.value}
-                active={params.gap.includes(gap.value)}
-                label={gap.label}
-                count={data?.counts?.gaps?.[gap.value] ?? 0}
+                active={params.hasImages}
+                label="Có ảnh"
+                count={data?.counts?.hasImages ?? 0}
+                tone="teal"
+                onClick={() => updateParams({ hasImages: !params.hasImages })}
+              />
+              <CountFilterButton
+                active={params.inspected}
+                label="Đã KĐ"
+                count={data?.counts?.inspected ?? 0}
+                tone="teal"
+                onClick={() => updateParams({ inspected: !params.inspected })}
+              />
+              <CountFilterButton
+                active={params.noHumanTouch}
+                label="Chưa human"
+                count={data?.counts?.noHumanTouch ?? 0}
+                tone="teal"
+                title="Có Zalo chat nhưng chưa có tin nhắn từ human sale."
+                onClick={() => updateParams({ noHumanTouch: !params.noHumanTouch })}
+              />
+              <CountFilterButton
+                active={params.underTwoBids}
+                label="<2 bid"
+                count={data?.counts?.underTwoBids ?? 0}
+                tone="teal"
+                title="Có giá khách và dealer bid, nhưng dưới 2 dealer có bid hợp lệ."
+                onClick={() => updateParams({ underTwoBids: !params.underTwoBids })}
+              />
+            </div>
+          </section>
+
+          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
+            <FilterTitle>Giai đoạn</FilterTitle>
+            <div className="grid grid-cols-2 gap-1.5">
+              {data?.stages.map((stage) => (
+                <CountFilterButton
+                  key={stage.key}
+                  active={params.stage.includes(stage.key)}
+                  label={stage.shortLabel}
+                  count={data?.counts?.stages?.[stage.key] ?? stage.count}
+                  title={stage.description}
+                  onClick={() => toggleStage(stage.key)}
+                />
+              ))}
+            </div>
+          </section>
+
+          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
+            <FilterTitle>Gap giá</FilterTitle>
+            <div className="grid grid-cols-2 gap-1.5">
+              <CountFilterButton
+                active={params.gap.length === 0}
+                label="Mọi gap"
+                count={data?.counts?.total ?? data?.scanned ?? 0}
                 tone="sky"
-                onClick={() => toggleGap(gap.value)}
+                onClick={() => updateParams({ gap: [] })}
               />
-            ))}
-          </section>
-
-          <section className="space-y-2 border border-slate-200 bg-white p-3">
-            <CountFilterButton
-              active={params.hasImages}
-              label="Đã có ảnh"
-              count={data?.counts?.hasImages ?? 0}
-              tone="teal"
-              onClick={() => updateParams({ hasImages: !params.hasImages })}
-            />
-            <CountFilterButton
-              active={params.inspected}
-              label="Đã kiểm định"
-              count={data?.counts?.inspected ?? 0}
-              tone="teal"
-              onClick={() => updateParams({ inspected: !params.inspected })}
-            />
+              {GAP_OPTIONS.map((gap) => (
+                <CountFilterButton
+                  key={gap.value}
+                  active={params.gap.includes(gap.value)}
+                  label={gap.label}
+                  count={data?.counts?.gaps?.[gap.value] ?? 0}
+                  tone="sky"
+                  onClick={() => toggleGap(gap.value)}
+                />
+              ))}
+            </div>
           </section>
         </aside>
 
@@ -672,6 +770,33 @@ function FunnelClient() {
 
                 <section>
                   <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                    <FileText className="size-4 text-sky-700" />
+                    Ghi chú
+                  </h2>
+                  <div className="border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-700">
+                    {detail.lead.notes || "Chưa có ghi chú."}
+                  </div>
+                  {(selectedLead.workStage === "failed" || detail.lead.crmStage.toUpperCase() === "FAILED") && (
+                    <div className="mt-2 border border-rose-200 bg-rose-50 px-3 py-3 text-sm">
+                      <div className="font-semibold text-rose-900">Lý do thất bại</div>
+                      <p className="mt-1 leading-6 text-rose-800">{detail.lead.failureReason || "Chưa có lý do thất bại."}</p>
+                      {failureHighlights.length > 0 && (
+                        <div className="mt-3 space-y-2">
+                          <div className="text-xs font-semibold text-rose-900">Highlights</div>
+                          {failureHighlights.map((item) => (
+                            <div key={item.label} className="border border-rose-100 bg-white px-2 py-2 text-rose-900">
+                              <span className="font-medium">{item.label}: </span>
+                              <span>{item.value}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
+
+                <section>
+                  <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
                     <ArrowDownUp className="size-4 text-amber-600" />
                     Giá dealer đã trả
                   </h2>
@@ -679,53 +804,52 @@ function FunnelClient() {
                     <table className="w-full text-sm">
                       <thead className="bg-slate-100 text-left text-xs text-slate-500">
                         <tr>
-                          <th className="px-3 py-2">Dealer</th>
-                          <th className="px-3 py-2">Giá</th>
-                          <th className="px-3 py-2">Vòng</th>
-                          <th className="px-3 py-2">Thời gian</th>
+                          <th className="w-12 px-3 py-2">STT</th>
+                          <th className="px-3 py-2">Tên dealer</th>
+                          <th className="px-3 py-2">
+                            <span className="mr-1 inline-block size-1.5 rounded-full bg-blue-600 align-middle" />
+                            Trước KĐ
+                          </th>
+                          <th className="px-3 py-2">
+                            <span className="mr-1 inline-block size-1.5 rounded-full bg-amber-500 align-middle" />
+                            Sau KĐ
+                          </th>
+                          <th className="px-3 py-2">Chênh lệch</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {detail.dealerBids.length ? (
-                          detail.dealerBids.map((bid) => (
-                            <tr key={`${bid.dealerId}-${bid.version}-${bid.createdAt}`} className="border-t border-slate-100">
-                              <td className="px-3 py-2">{bid.dealerName}</td>
-                              <td className="px-3 py-2 font-medium">{bid.priceLabel}</td>
-                              <td className="px-3 py-2">{phaseLabel(bid.phase)}</td>
-                              <td className="px-3 py-2">{formatDateTime(bid.createdAt)}</td>
+                        {dealerBidRows.length ? (
+                          dealerBidRows.map((row, index) => (
+                            <tr key={row.dealerId} className="border-t border-slate-100 align-top">
+                              <td className="px-3 py-3 text-slate-500">{index + 1}</td>
+                              <td className="px-3 py-3 font-medium">{row.dealerName}</td>
+                              <td className="px-3 py-3">
+                                <DealerBidCell bid={row.preInspection} />
+                              </td>
+                              <td className="px-3 py-3">
+                                <DealerBidCell bid={row.postInspection} />
+                              </td>
+                              <td
+                                className={classNames(
+                                  "px-3 py-3 font-semibold",
+                                  row.diff === null && "text-slate-500",
+                                  row.diff !== null && row.diff > 0 && "text-emerald-700",
+                                  row.diff !== null && row.diff < 0 && "text-rose-600",
+                                )}
+                              >
+                                {formatDiff(row.diff)}
+                              </td>
                             </tr>
                           ))
                         ) : (
                           <tr>
-                            <td colSpan={4} className="h-16 text-center text-slate-500">
+                            <td colSpan={5} className="h-16 text-center text-slate-500">
                               Chưa có bid dealer.
                             </td>
                           </tr>
                         )}
                       </tbody>
                     </table>
-                  </div>
-                </section>
-
-                <section>
-                  <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                    <Check className="size-4 text-teal-700" />
-                    Cột mốc
-                  </h2>
-                  <div className="space-y-2">
-                    {detail.timeline.slice(-8).reverse().map((item, index) => (
-                      <div key={`${item.at}-${index}`} className="border border-slate-200 bg-slate-50 px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                          <span>{formatDateTime(item.at)}</span>
-                          {item.stage && <span className="border border-slate-200 bg-white px-1.5 py-0.5">{item.stage}</span>}
-                          {item.priceVucarOffered && <span>Vucar {formatMillionShort(item.priceVucarOffered)}</span>}
-                        </div>
-                        {item.thinking && <p className="mt-1 line-clamp-3 text-sm text-slate-700">{item.thinking}</p>}
-                      </div>
-                    ))}
-                    {detail.timeline.length === 0 && (
-                      <div className="border border-slate-200 px-3 py-4 text-sm text-slate-500">Chưa có summary timeline.</div>
-                    )}
                   </div>
                 </section>
 
@@ -745,7 +869,12 @@ function FunnelClient() {
                           )}
                         >
                           <div className="mb-1 flex items-center justify-between gap-3 text-[11px] text-slate-400">
-                            <span>{message.sender}</span>
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span className="truncate">{message.sender}</span>
+                              <span className={classNames("shrink-0 border px-1.5 py-0.5 text-[10px] font-semibold", senderTagClass(message.senderKind))}>
+                                {message.senderTag}
+                              </span>
+                            </span>
                             <span>{formatDateTime(message.at)}</span>
                           </div>
                           {message.thumbUrl ? (
@@ -758,14 +887,16 @@ function FunnelClient() {
                                 className="max-h-72 w-auto max-w-full border border-slate-200 object-contain"
                               />
                             </a>
-                          ) : message.callDurationLabel ? (
+                          ) : message.type === "call" ? (
                             <div className="inline-flex items-center gap-2 rounded-none border border-slate-200 bg-slate-50 px-3 py-2">
                               <span className="inline-flex size-8 items-center justify-center border border-slate-200 bg-white text-sky-700">
                                 <Phone className="size-4" />
                               </span>
                               <span>
-                                <span className="block font-medium">Cuộc gọi</span>
-                                <span className="block text-xs text-slate-500">{message.callDurationLabel}</span>
+                                <span className="block font-medium">{message.content || "Cuộc gọi"}</span>
+                                <span className="block text-xs text-slate-500">
+                                  {message.callDurationLabel || (message.callKind === "missed" ? "Không kết nối" : "-")}
+                                </span>
                               </span>
                             </div>
                           ) : (
@@ -794,6 +925,23 @@ function Info({ label, value }: { label: string; value: string }) {
     <div className="border border-slate-200 bg-slate-50 px-3 py-2">
       <div className="text-[11px] font-medium text-slate-500">{label}</div>
       <div className="mt-1 truncate text-sm font-semibold text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+function DealerBidCell({
+  bid,
+}: {
+  bid: ReturnType<typeof groupDealerBidsByDealer>[number]["preInspection"];
+}) {
+  if (!bid) {
+    return <span className="text-sm italic text-slate-400">Chưa có giá</span>;
+  }
+
+  return (
+    <div>
+      <div className="font-semibold text-blue-700">{formatVnd(bid.price)}</div>
+      <div className="mt-1 text-xs text-slate-400">{formatDateTime(bid.createdAt)}</div>
     </div>
   );
 }

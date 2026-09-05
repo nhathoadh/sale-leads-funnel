@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  SALE_LEAD_STAGE_CONFIG,
   calculateGapPercent,
   classifySaleLeadStage,
   filterSaleLeadRows,
@@ -8,6 +9,7 @@ import {
   getSaleLeadFilterCounts,
   getQuoteTimestamps,
   hasQuotedAfter,
+  summarizeDealerBids,
   type SaleLeadClassifierInput,
   type SaleLeadFilterableRow,
 } from "@/lib/sale-leads-funnel";
@@ -30,6 +32,7 @@ function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassif
     priceVucarOfferedAt: null,
     priceVucarOffered: null,
     agentPricingEvents: null,
+    saleCompletedCallTs: [],
     ...overrides,
   };
 }
@@ -61,6 +64,16 @@ describe("getQuoteTimestamps", () => {
       "2026-09-01T06:00:00.000Z",
       "2026-09-01T07:00:00.000Z",
     ]);
+  });
+
+  it("treats successful outbound sale calls as quote timestamps", () => {
+    expect(
+      getQuoteTimestamps(
+        lead({
+          saleCompletedCallTs: ["2026-09-01T04:00:00.000Z"],
+        }),
+      ),
+    ).toEqual(["2026-09-01T04:00:00.000Z"]);
   });
 });
 
@@ -108,6 +121,16 @@ describe("classifySaleLeadStage", () => {
     ).toBe("need_inspection_booking");
   });
 
+  it("asks sales to book inspection after a successful sale call quote", () => {
+    expect(
+      classifySaleLeadStage(
+        lead({
+          saleCompletedCallTs: ["2026-09-01T04:00:00.000Z"],
+        }),
+      ),
+    ).toBe("need_inspection_booking");
+  });
+
   it("asks sales to quote again after a post-inspection bid", () => {
     expect(
       classifySaleLeadStage(
@@ -150,6 +173,51 @@ describe("classifySaleLeadStage", () => {
   });
 });
 
+describe("sale lead stage config", () => {
+  it("orders operational stages before delayed, failed, and no-zalo buckets", () => {
+    expect(SALE_LEAD_STAGE_CONFIG.map((stage) => stage.key)).toEqual([
+      "need_contact",
+      "need_images",
+      "need_price_source",
+      "need_quote",
+      "need_inspection_booking",
+      "need_post_inspection_quote",
+      "follow_up_after_quote",
+      "delayed",
+      "failed",
+      "no_zalo",
+    ]);
+  });
+});
+
+describe("summarizeDealerBids", () => {
+  it("anchors a repeated highest pre-inspection bid at the first time that price appeared", () => {
+    expect(
+      summarizeDealerBids([
+        {
+          price: 150_000_000,
+          version: 1,
+          created_at: "2026-08-31T03:28:03.926156Z",
+          dealer_name: "Dealer A",
+          is_interested: true,
+        },
+        {
+          price: 150_000_000,
+          version: 1,
+          created_at: "2026-08-31T04:24:01.817324Z",
+          dealer_name: "Dealer A",
+          is_interested: true,
+        },
+      ]),
+    ).toMatchObject({
+      highestBid: 150_000_000,
+      validDealerBidDealerCount: 1,
+      preInspectionBidCount: 2,
+      latestPreInspectionBidAt: "2026-08-31T03:28:03.926156Z",
+    });
+  });
+});
+
 describe("calculateGapPercent", () => {
   it("calculates positive customer-vs-bid gap as a percentage of customer price", () => {
     expect(calculateGapPercent(500_000_000, 475_000_000)).toBe(5);
@@ -168,12 +236,12 @@ describe("calculateGapPercent", () => {
 
 describe("sale lead list filters", () => {
   const rows = [
-    { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false },
-    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false },
-    { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true },
-    { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true },
-    { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false },
-    { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false },
+    { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: false },
+    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false },
+    { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: true },
+    { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false },
+    { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: true },
+    { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false, noHumanTouch: false, underTwoBids: false },
   ] as SaleLeadFilterableRow[];
 
   it("filters leads by images and inspection status in addition to stage and gap", () => {
@@ -187,6 +255,8 @@ describe("sale lead list filters", () => {
     ).toEqual([rows[2], rows[3]]);
 
     expect(filterSaleLeadRows(rows, { hasImages: true, inspected: false })).toEqual([rows[1]]);
+    expect(filterSaleLeadRows(rows, { noHumanTouch: true })).toEqual([rows[0], rows[4]]);
+    expect(filterSaleLeadRows(rows, { underTwoBids: true })).toEqual([rows[2], rows[4]]);
   });
 
   it("counts filter buttons from the full unfiltered row set", () => {
@@ -212,6 +282,8 @@ describe("sale lead list filters", () => {
       },
       hasImages: 3,
       inspected: 2,
+      noHumanTouch: 2,
+      underTwoBids: 2,
     });
   });
 });

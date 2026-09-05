@@ -17,6 +17,8 @@ export interface SaleLeadFilterableRow {
   gapBucket: SaleLeadGapBucket;
   hasImages: boolean;
   inspected: boolean;
+  noHumanTouch: boolean;
+  underTwoBids: boolean;
 }
 
 export interface SaleLeadListFilters {
@@ -24,6 +26,8 @@ export interface SaleLeadListFilters {
   gaps?: SaleLeadGapBucket[];
   hasImages?: boolean;
   inspected?: boolean;
+  noHumanTouch?: boolean;
+  underTwoBids?: boolean;
 }
 
 export interface SaleLeadFilterCounts {
@@ -32,6 +36,8 @@ export interface SaleLeadFilterCounts {
   gaps: Record<SaleLeadGapBucket, number>;
   hasImages: number;
   inspected: number;
+  noHumanTouch: number;
+  underTwoBids: number;
 }
 
 export interface AgentPricingEvent {
@@ -63,6 +69,18 @@ export interface SaleLeadClassifierInput {
   priceVucarOfferedAt?: string | null;
   priceVucarOffered?: number | null;
   agentPricingEvents?: AgentPricingEvents | null;
+  saleCompletedCallTs?: string[] | null;
+}
+
+export interface DealerBidLike {
+  price?: number | string | null;
+  version?: number | string | null;
+  created_at?: string | null;
+  dealer_id?: string | null;
+  dealerId?: string | null;
+  dealer_name?: string | null;
+  dealerName?: string | null;
+  is_interested?: boolean | null;
 }
 
 export interface SaleLeadStageConfig {
@@ -73,18 +91,6 @@ export interface SaleLeadStageConfig {
 }
 
 export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
-  {
-    key: "failed",
-    label: "Thất bại",
-    shortLabel: "Thất bại",
-    description: "Lead có CRM stage FAILED.",
-  },
-  {
-    key: "delayed",
-    label: "Hoãn bán",
-    shortLabel: "Hoãn bán",
-    description: "Lead có intention DELAY và chưa bị FAILED.",
-  },
   {
     key: "need_contact",
     label: "Cần liên hệ",
@@ -128,6 +134,18 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
     description: "Đã báo giá nhưng chưa đặt cọc, win hay thất bại.",
   },
   {
+    key: "delayed",
+    label: "Hoãn bán",
+    shortLabel: "Hoãn",
+    description: "Lead có intention DELAY và chưa bị FAILED.",
+  },
+  {
+    key: "failed",
+    label: "Thất bại",
+    shortLabel: "Thất bại",
+    description: "Lead có CRM stage FAILED.",
+  },
+  {
     key: "no_zalo",
     label: "Không có Zalo chat",
     shortLabel: "No Zalo",
@@ -160,6 +178,10 @@ export function getQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
     addTimestamp(timestamps, seen, ts);
   }
 
+  for (const ts of input.saleCompletedCallTs ?? []) {
+    addTimestamp(timestamps, seen, ts);
+  }
+
   addTimestamp(timestamps, seen, input.priceVucarOfferedAt);
   addTimestamp(timestamps, seen, input.agentPricingEvents?.vo_at ?? null);
 
@@ -176,9 +198,54 @@ export function getQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
 export function hasQuoted(input: SaleLeadClassifierInput): boolean {
   return (
     getQuoteTimestamps(input).length > 0 ||
-    input.priceVucarOffered !== null && input.priceVucarOffered !== undefined ||
+    (input.priceVucarOffered !== null && input.priceVucarOffered !== undefined) ||
     input.agentPricingEvents?.vo_fired === true
   );
+}
+
+function latestAt(items: Array<{ created_at: string | null }>) {
+  return items.reduce<string | null>((latest, row) => {
+    if (!row.created_at) return latest;
+    return !latest || new Date(row.created_at).getTime() > new Date(latest).getTime() ? row.created_at : latest;
+  }, null);
+}
+
+function firstAtForHighestPrice(items: Array<{ price: number; created_at: string | null }>) {
+  const highest = items.reduce<number | null>((best, row) => (best === null || row.price > best ? row.price : best), null);
+  if (highest === null) return null;
+  return items
+    .filter((row) => row.price === highest)
+    .reduce<string | null>((first, row) => {
+      if (!row.created_at) return first;
+      return !first || new Date(row.created_at).getTime() < new Date(first).getTime() ? row.created_at : first;
+    }, null);
+}
+
+export function summarizeDealerBids(rows: DealerBidLike[] | undefined) {
+  const validRows = (rows ?? [])
+    .map((row) => ({
+      ...row,
+      price: Number(row.price ?? 0),
+      version: Number(row.version ?? 1),
+      created_at: row.created_at ? String(row.created_at) : null,
+      dealer_id: row.dealer_id || row.dealerId || row.dealer_name || row.dealerName || "unknown",
+      dealer_name: row.dealer_name || row.dealerName || "Unknown Dealer",
+    }))
+    .filter((row) => row.price > 1_000_000 && row.is_interested !== false);
+
+  const pre = validRows.filter((row) => row.version <= 1);
+  const post = validRows.filter((row) => row.version >= 2);
+  const highest = validRows.reduce<any | null>((best, row) => (!best || row.price > best.price ? row : best), null);
+
+  return {
+    highestBid: highest?.price ?? null,
+    highestDealerName: highest?.dealer_name ?? null,
+    validDealerBidDealerCount: new Set(validRows.map((row) => row.dealer_id)).size,
+    preInspectionBidCount: pre.length,
+    postInspectionBidCount: post.length,
+    latestPreInspectionBidAt: firstAtForHighestPrice(pre) ?? latestAt(pre),
+    latestPostInspectionBidAt: firstAtForHighestPrice(post) ?? latestAt(post),
+  };
 }
 
 export function hasQuotedAfter(quoteTimestamps: string[], anchorTimestamp: string | null | undefined): boolean {
@@ -244,7 +311,9 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
     const gapOk = !filters.gaps?.length || filters.gaps.includes(row.gapBucket);
     const imageOk = filters.hasImages === undefined || row.hasImages === filters.hasImages;
     const inspectedOk = filters.inspected === undefined || row.inspected === filters.inspected;
-    return stageOk && gapOk && imageOk && inspectedOk;
+    const humanTouchOk = filters.noHumanTouch === undefined || row.noHumanTouch === filters.noHumanTouch;
+    const underTwoBidsOk = filters.underTwoBids === undefined || row.underTwoBids === filters.underTwoBids;
+    return stageOk && gapOk && imageOk && inspectedOk && humanTouchOk && underTwoBidsOk;
   });
 }
 
@@ -254,11 +323,15 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
 
   let hasImages = 0;
   let inspected = 0;
+  let noHumanTouch = 0;
+  let underTwoBids = 0;
   for (const row of rows) {
     stages[row.workStage] = (stages[row.workStage] ?? 0) + 1;
     gaps[row.gapBucket] = (gaps[row.gapBucket] ?? 0) + 1;
     if (row.hasImages) hasImages += 1;
     if (row.inspected) inspected += 1;
+    if (row.noHumanTouch) noHumanTouch += 1;
+    if (row.underTwoBids) underTwoBids += 1;
   }
 
   return {
@@ -267,6 +340,8 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     gaps,
     hasImages,
     inspected,
+    noHumanTouch,
+    underTwoBids,
   };
 }
 

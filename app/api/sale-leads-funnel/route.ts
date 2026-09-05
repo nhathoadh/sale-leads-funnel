@@ -12,6 +12,7 @@ import {
   getGapBucket,
   getQuoteTimestamps,
   isInInspectionRegion,
+  summarizeDealerBids,
   type AgentPricingEvents,
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
@@ -97,40 +98,20 @@ function normalizeQuoteTsFromSnapshots(snapshots: any[]) {
   return ts;
 }
 
+function normalizeTimestampArray(value: unknown) {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value
+      .filter(Boolean)
+      .map((item) => (item instanceof Date ? item.toISOString() : String(item)));
+  }
+  if (typeof value === "string") return [value];
+  return [];
+}
+
 function extractAgentPricingEvents(atoms: unknown): AgentPricingEvents | null {
   const parsed = parseJson(atoms);
   return parsed?.agent_pricing_events ?? null;
-}
-
-function bidSummary(rows: any[] | undefined) {
-  const validRows = (rows ?? [])
-    .map((row) => ({
-      ...row,
-      price: Number(row.price ?? 0),
-      version: Number(row.version ?? 1),
-      created_at: row.created_at ? String(row.created_at) : null,
-      dealer_name: row.dealer_name || row.dealerName || "Unknown Dealer",
-    }))
-    .filter((row) => row.price > 1_000_000 && row.is_interested !== false);
-
-  const pre = validRows.filter((row) => row.version <= 1);
-  const post = validRows.filter((row) => row.version >= 2);
-  const highest = validRows.reduce<any | null>((best, row) => (!best || row.price > best.price ? row : best), null);
-
-  const latestAt = (items: any[]) =>
-    items.reduce<string | null>((latest, row) => {
-      if (!row.created_at) return latest;
-      return !latest || new Date(row.created_at).getTime() > new Date(latest).getTime() ? row.created_at : latest;
-    }, null);
-
-  return {
-    highestBid: highest?.price ?? null,
-    highestDealerName: highest?.dealer_name ?? null,
-    preInspectionBidCount: pre.length,
-    postInspectionBidCount: post.length,
-    latestPreInspectionBidAt: latestAt(pre),
-    latestPostInspectionBidAt: latestAt(post),
-  };
 }
 
 function hoursSince(value: string | null) {
@@ -178,6 +159,8 @@ export async function GET(request: Request) {
     const gapFilter = parseCsv(searchParams.get("gap")) as SaleLeadGapBucket[];
     const hasImagesFilter = parseBooleanFilter(searchParams.get("hasImages"));
     const inspectedFilter = parseBooleanFilter(searchParams.get("inspected"));
+    const noHumanTouchFilter = parseBooleanFilter(searchParams.get("noHumanTouch"));
+    const underTwoBidsFilter = parseBooleanFilter(searchParams.get("underTwoBids"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
 
     const queryParams: unknown[] = [from, to];
@@ -249,6 +232,8 @@ export async function GET(request: Request) {
                COUNT(m.msg_id) AS message_count,
                COUNT(m.msg_id) FILTER (WHERE m.is_self = false) AS customer_message_count,
                COUNT(m.msg_id) FILTER (WHERE m.is_self = true) AS sale_message_count,
+               COUNT(m.msg_id) FILTER (WHERE m.is_self = true AND m.source = 'user') AS human_message_count,
+               COUNT(m.msg_id) FILTER (WHERE m.is_self = true AND m.source = 'bot') AS ai_message_count,
                COUNT(m.msg_id) FILTER (
                  WHERE m.is_self = false
                    AND m.content IS NOT NULL
@@ -263,7 +248,18 @@ export async function GET(request: Request) {
                ) AS customer_image_message_count,
                MAX(m.created_at) AS last_message_at,
                MAX(m.created_at) FILTER (WHERE m.is_self = false) AS last_customer_at,
-               MAX(m.created_at) FILTER (WHERE m.is_self = true) AS last_sale_at
+               MAX(m.created_at) FILTER (WHERE m.is_self = true) AS last_sale_at,
+               ARRAY_AGG(m.created_at ORDER BY m.created_at) FILTER (
+                 WHERE m.is_self = true
+                   AND m.content IS NOT NULL
+                   AND m.content LIKE '{%'
+                   AND m.content LIKE '%sendBubbleMessage%'
+                   AND (m.content ILIKE '%Cuộc gọi%' OR m.content ILIKE '%Cuoc goi%')
+                   AND (
+                     m.content LIKE '%recommened.calltime%'
+                     OR m.content LIKE '%recommended.calltime%'
+                   )
+               ) AS sale_completed_call_ts
              FROM leads_relation lr
              LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
              WHERE lr.phone = ANY($1::text[])
@@ -341,15 +337,21 @@ export async function GET(request: Request) {
       .map((row: any) => {
         const snapshots = snapshotsFromResult(summaryByCar.get(row.car_id));
         const latest = latestSnapshot(summaryByCar.get(row.car_id));
-        const bid = bidSummary((groupedBids as Record<string, any[]>)[row.car_id]);
+        const bid = summarizeDealerBids((groupedBids as Record<string, any[]>)[row.car_id]);
         const fallbackHighestBid = bid.highestBid ?? numberOrNull(row.price_highest_bid);
         const zalo = row.phone ? zaloByPhone.get(row.phone) : null;
         const relationCount = Number(zalo?.relation_count ?? 0);
         const customerMessageCount = Number(zalo?.customer_message_count ?? 0);
+        const humanMessageCount = Number(zalo?.human_message_count ?? 0);
+        const aiMessageCount = Number(zalo?.ai_message_count ?? 0);
         const customerZaloImageCount = Number(zalo?.customer_image_message_count ?? 0);
         const inspected = inspectionByCar.has(row.car_id);
         const booked = bookingByCar.has(row.car_id);
         const priceCustomer = numberOrNull(row.price_customer ?? latest?.price_customer);
+        const hasCustomerAndDealerPrice = Boolean(priceCustomer && fallbackHighestBid);
+        const dealerBidDealerCount = Number(bid.validDealerBidDealerCount ?? 0);
+        const noHumanTouch = relationCount > 0 && humanMessageCount <= 0;
+        const underTwoBids = hasCustomerAndDealerPrice && dealerBidDealerCount > 0 && dealerBidDealerCount < 2;
         const gapPercent = calculateGapPercent(priceCustomer, fallbackHighestBid);
         const storedImageCount = imageCount(row.additional_images);
         const summaryHadImage = latest?.had_car_image === true || latest?.had_image === true;
@@ -373,6 +375,7 @@ export async function GET(request: Request) {
           priceVucarOfferedAt: latest?.price_vucar_offered_at ?? null,
           priceVucarOffered: numberOrNull(latest?.price_vucar_offered),
           agentPricingEvents: extractAgentPricingEvents(signalByCar.get(row.car_id)),
+          saleCompletedCallTs: normalizeTimestampArray(zalo?.sale_completed_call_ts),
         };
         const workStage = classifySaleLeadStage(classifierInput);
         if (!workStage) return null;
@@ -408,6 +411,11 @@ export async function GET(request: Request) {
           inspected,
           booked,
           hasImages,
+          noHumanTouch,
+          underTwoBids,
+          humanMessageCount,
+          aiMessageCount,
+          dealerBidDealerCount,
           lastTouchAt,
           lastTouchHours: hoursSince(lastTouchAt),
           lastCustomerAt: zalo?.last_customer_at ? String(zalo.last_customer_at) : null,
@@ -429,6 +437,8 @@ export async function GET(request: Request) {
       gaps: gapFilter,
       hasImages: hasImagesFilter,
       inspected: inspectedFilter,
+      noHumanTouch: noHumanTouchFilter,
+      underTwoBids: underTwoBidsFilter,
     });
     const sortedRows = sortRows(filteredRows, sort);
     const total = sortedRows.length;
@@ -452,6 +462,8 @@ export async function GET(request: Request) {
         gap: gapFilter,
         hasImages: hasImagesFilter,
         inspected: inspectedFilter,
+        noHumanTouch: noHumanTouchFilter,
+        underTwoBids: underTwoBidsFilter,
         sort,
         page,
         perPage,
