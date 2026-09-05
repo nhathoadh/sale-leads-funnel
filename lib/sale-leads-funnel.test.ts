@@ -7,6 +7,7 @@ import {
   filterSaleLeadRows,
   getGapBucket,
   getSaleLeadFilterCounts,
+  getSaleLeadFilterFacets,
   getQuoteTimestamps,
   hasQuotedAfter,
   summarizeDealerBids,
@@ -284,6 +285,40 @@ describe("sale lead list filters", () => {
       inspected: 2,
       noHumanTouch: 2,
       underTwoBids: 2,
+    });
+  });
+
+  it("recounts other filter groups against the currently selected filters", () => {
+    expect(getSaleLeadFilterFacets(rows, { hasImages: true })).toMatchObject({
+      total: 3,
+      stages: {
+        need_contact: 0,
+        need_images: 1,
+        need_price_source: 0,
+        need_quote: 1,
+        need_inspection_booking: 0,
+        need_post_inspection_quote: 0,
+        follow_up_after_quote: 1,
+        delayed: 0,
+        failed: 0,
+        no_zalo: 0,
+      },
+      gaps: {
+        lt5: 1,
+        "5_10": 1,
+        gt10: 0,
+        no_price: 1,
+      },
+    });
+
+    expect(getSaleLeadFilterFacets(rows, { gaps: ["lt5"] })).toMatchObject({
+      total: 2,
+      status: {
+        hasImages: 1,
+        inspected: 1,
+        noHumanTouch: 1,
+        underTwoBids: 0,
+      },
     });
   });
 });

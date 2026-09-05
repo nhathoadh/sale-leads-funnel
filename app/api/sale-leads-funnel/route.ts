@@ -9,6 +9,7 @@ import {
   filterSaleLeadRows,
   formatMillionShort,
   getSaleLeadFilterCounts,
+  getSaleLeadFilterFacets,
   getGapBucket,
   getQuoteTimestamps,
   isInInspectionRegion,
@@ -432,13 +433,17 @@ export async function GET(request: Request) {
       .filter(Boolean) as any[];
 
     const counts = getSaleLeadFilterCounts(allRows);
-    const filteredRows = filterSaleLeadRows(allRows, {
+    const activeFilters = {
       stages: stageFilter,
       gaps: gapFilter,
       hasImages: hasImagesFilter,
       inspected: inspectedFilter,
       noHumanTouch: noHumanTouchFilter,
       underTwoBids: underTwoBidsFilter,
+    };
+    const facets = getSaleLeadFilterFacets(allRows, activeFilters);
+    const filteredRows = filterSaleLeadRows(allRows, {
+      ...activeFilters,
     });
     const sortedRows = sortRows(filteredRows, sort);
     const total = sortedRows.length;
@@ -475,7 +480,8 @@ export async function GET(request: Request) {
       totalPages: Math.max(1, Math.ceil(total / perPage)),
       warnings: zaloUnavailable ? ["zalo_unavailable"] : [],
       counts,
-      stages: SALE_LEAD_STAGE_CONFIG.map((stage) => ({ ...stage, count: counts.stages[stage.key] ?? 0 })),
+      facets,
+      stages: SALE_LEAD_STAGE_CONFIG.map((stage) => ({ ...stage, count: facets.stages[stage.key] ?? 0 })),
       picOptions,
       leads,
     });

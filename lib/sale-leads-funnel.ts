@@ -40,6 +40,18 @@ export interface SaleLeadFilterCounts {
   underTwoBids: number;
 }
 
+export interface SaleLeadFilterFacets {
+  total: number;
+  stages: Record<SaleLeadWorkStage, number>;
+  gaps: Record<SaleLeadGapBucket, number>;
+  status: {
+    hasImages: number;
+    inspected: number;
+    noHumanTouch: number;
+    underTwoBids: number;
+  };
+}
+
 export interface AgentPricingEvent {
   type?: string | null;
   at?: string | null;
@@ -342,6 +354,44 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     inspected,
     noHumanTouch,
     underTwoBids,
+  };
+}
+
+export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: SaleLeadListFilters): SaleLeadFilterFacets {
+  const total = filterSaleLeadRows(rows, filters).length;
+  const stageRows = filterSaleLeadRows(rows, {
+    gaps: filters.gaps,
+    hasImages: filters.hasImages,
+    inspected: filters.inspected,
+    noHumanTouch: filters.noHumanTouch,
+    underTwoBids: filters.underTwoBids,
+  });
+  const gapRows = filterSaleLeadRows(rows, {
+    stages: filters.stages,
+    hasImages: filters.hasImages,
+    inspected: filters.inspected,
+    noHumanTouch: filters.noHumanTouch,
+    underTwoBids: filters.underTwoBids,
+  });
+  const statusRows = filterSaleLeadRows(rows, {
+    stages: filters.stages,
+    gaps: filters.gaps,
+  });
+
+  const stageCounts = getSaleLeadFilterCounts(stageRows).stages;
+  const gapCounts = getSaleLeadFilterCounts(gapRows).gaps;
+  const statusCounts = getSaleLeadFilterCounts(statusRows);
+
+  return {
+    total,
+    stages: stageCounts,
+    gaps: gapCounts,
+    status: {
+      hasImages: statusCounts.hasImages,
+      inspected: statusCounts.inspected,
+      noHumanTouch: statusCounts.noHumanTouch,
+      underTwoBids: statusCounts.underTwoBids,
+    },
   };
 }
 

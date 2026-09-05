@@ -92,6 +92,17 @@ interface FunnelResponse {
     noHumanTouch: number;
     underTwoBids: number;
   };
+  facets?: {
+    total: number;
+    stages: Record<SaleLeadWorkStage, number>;
+    gaps: Record<SaleLeadGapBucket, number>;
+    status: {
+      hasImages: number;
+      inspected: number;
+      noHumanTouch: number;
+      underTwoBids: number;
+    };
+  };
   stages: Array<(typeof SALE_LEAD_STAGE_CONFIG)[number] & { count: number }>;
   picOptions: Array<{ id: string; name: string }>;
   leads: FunnelLead[];
@@ -530,21 +541,21 @@ function FunnelClient() {
               <CountFilterButton
                 active={params.hasImages}
                 label="Có ảnh"
-                count={data?.counts?.hasImages ?? 0}
+                count={data?.facets?.status.hasImages ?? data?.counts?.hasImages ?? 0}
                 tone="teal"
                 onClick={() => updateParams({ hasImages: !params.hasImages })}
               />
               <CountFilterButton
                 active={params.inspected}
                 label="Đã KĐ"
-                count={data?.counts?.inspected ?? 0}
+                count={data?.facets?.status.inspected ?? data?.counts?.inspected ?? 0}
                 tone="teal"
                 onClick={() => updateParams({ inspected: !params.inspected })}
               />
               <CountFilterButton
                 active={params.noHumanTouch}
                 label="Chưa human"
-                count={data?.counts?.noHumanTouch ?? 0}
+                count={data?.facets?.status.noHumanTouch ?? data?.counts?.noHumanTouch ?? 0}
                 tone="teal"
                 title="Có Zalo chat nhưng chưa có tin nhắn từ human sale."
                 onClick={() => updateParams({ noHumanTouch: !params.noHumanTouch })}
@@ -552,7 +563,7 @@ function FunnelClient() {
               <CountFilterButton
                 active={params.underTwoBids}
                 label="<2 bid"
-                count={data?.counts?.underTwoBids ?? 0}
+                count={data?.facets?.status.underTwoBids ?? data?.counts?.underTwoBids ?? 0}
                 tone="teal"
                 title="Có giá khách và dealer bid, nhưng dưới 2 dealer có bid hợp lệ."
                 onClick={() => updateParams({ underTwoBids: !params.underTwoBids })}
@@ -568,7 +579,7 @@ function FunnelClient() {
                   key={stage.key}
                   active={params.stage.includes(stage.key)}
                   label={stage.shortLabel}
-                  count={data?.counts?.stages?.[stage.key] ?? stage.count}
+                  count={data?.facets?.stages?.[stage.key] ?? data?.counts?.stages?.[stage.key] ?? stage.count}
                   title={stage.description}
                   onClick={() => toggleStage(stage.key)}
                 />
@@ -582,7 +593,7 @@ function FunnelClient() {
               <CountFilterButton
                 active={params.gap.length === 0}
                 label="Mọi gap"
-                count={data?.counts?.total ?? data?.scanned ?? 0}
+                count={data?.facets?.total ?? data?.counts?.total ?? data?.scanned ?? 0}
                 tone="sky"
                 onClick={() => updateParams({ gap: [] })}
               />
@@ -591,7 +602,7 @@ function FunnelClient() {
                   key={gap.value}
                   active={params.gap.includes(gap.value)}
                   label={gap.label}
-                  count={data?.counts?.gaps?.[gap.value] ?? 0}
+                  count={data?.facets?.gaps?.[gap.value] ?? data?.counts?.gaps?.[gap.value] ?? 0}
                   tone="sky"
                   onClick={() => toggleGap(gap.value)}
                 />
@@ -620,11 +631,12 @@ function FunnelClient() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1180px] border-collapse text-sm">
+                <table className="w-full min-w-[1260px] border-collapse text-sm">
                   <thead className="bg-slate-100 text-left text-xs font-semibold text-slate-500">
                     <tr>
                       <th className="px-3 py-2">Xe</th>
                       <th className="px-3 py-2">Lead</th>
+                      <th className="px-3 py-2">Giai đoạn</th>
                       <th className="px-3 py-2">SĐT</th>
                       <th className="px-3 py-2">Gap</th>
                       <th className="px-3 py-2">Giá mong muốn</th>
@@ -652,6 +664,11 @@ function FunnelClient() {
                           <td className="px-3 py-3">
                             <div className="font-medium">{lead.leadName}</div>
                             <div className="text-xs text-slate-500">{lead.picName}</div>
+                          </td>
+                          <td className="px-3 py-3">
+                            <span className="inline-flex max-w-[132px] items-center border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-700">
+                              <span className="truncate">{stageLabel(lead.workStage)}</span>
+                            </span>
                           </td>
                           <td className="px-3 py-3">
                             <button
@@ -684,13 +701,13 @@ function FunnelClient() {
                           <td className="px-3 py-3">{lead.inspected ? "Đã KĐ" : lead.booked ? "Đã hẹn" : "Chưa"}</td>
                           <td className="px-3 py-3">
                             <div className="font-medium">{formatLastTouch(lead.lastTouchHours, lead.lastTouchAt)}</div>
-                            <div className="text-xs text-slate-500">{stageLabel(lead.workStage)}</div>
+                            <div className="text-xs text-slate-500">{formatDateTime(lead.lastTouchAt)}</div>
                           </td>
                         </tr>
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={10} className="h-40 text-center text-slate-500">
+                        <td colSpan={11} className="h-40 text-center text-slate-500">
                           Không có lead khớp bộ lọc.
                         </td>
                       </tr>
