@@ -9,6 +9,7 @@ import {
   getSaleLeadFilterCounts,
   getSaleLeadFilterFacets,
   getQuoteTimestamps,
+  getSaleLeadStageTone,
   hasQuotedAfter,
   summarizeDealerBids,
   type SaleLeadClassifierInput,
@@ -188,6 +189,18 @@ describe("sale lead stage config", () => {
       "failed",
       "no_zalo",
     ]);
+  });
+
+  it("gives every stage a soft pastel badge tone", () => {
+    for (const stage of SALE_LEAD_STAGE_CONFIG) {
+      const tone = getSaleLeadStageTone(stage.key);
+      expect(tone.badgeClass).toContain("bg-");
+      expect(tone.badgeClass).toContain("border-");
+    }
+
+    expect(getSaleLeadStageTone("need_contact").badgeClass).toContain("bg-sky-50");
+    expect(getSaleLeadStageTone("failed").badgeClass).toContain("bg-rose-50");
+    expect(getSaleLeadStageTone("no_zalo").badgeClass).toContain("bg-slate-50");
   });
 });
 

@@ -102,6 +102,10 @@ export interface SaleLeadStageConfig {
   description: string;
 }
 
+export interface SaleLeadStageTone {
+  badgeClass: string;
+}
+
 export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
   {
     key: "need_contact",
@@ -166,6 +170,23 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
 ];
 
 const GAP_BUCKETS: SaleLeadGapBucket[] = ["lt5", "5_10", "gt10", "no_price"];
+
+const SALE_LEAD_STAGE_TONES: Record<SaleLeadWorkStage, SaleLeadStageTone> = {
+  need_contact: { badgeClass: "border-sky-200 bg-sky-50 text-sky-700" },
+  need_images: { badgeClass: "border-violet-200 bg-violet-50 text-violet-700" },
+  need_price_source: { badgeClass: "border-yellow-200 bg-yellow-50 text-yellow-800" },
+  need_quote: { badgeClass: "border-orange-200 bg-orange-50 text-orange-700" },
+  need_inspection_booking: { badgeClass: "border-teal-200 bg-teal-50 text-teal-700" },
+  need_post_inspection_quote: { badgeClass: "border-indigo-200 bg-indigo-50 text-indigo-700" },
+  follow_up_after_quote: { badgeClass: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  delayed: { badgeClass: "border-amber-200 bg-amber-50 text-amber-700" },
+  failed: { badgeClass: "border-rose-200 bg-rose-50 text-rose-700" },
+  no_zalo: { badgeClass: "border-slate-200 bg-slate-50 text-slate-600" },
+};
+
+export function getSaleLeadStageTone(stage: SaleLeadWorkStage): SaleLeadStageTone {
+  return SALE_LEAD_STAGE_TONES[stage];
+}
 
 const TERMINAL_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID"]);
 const OFFER_EVENT_TYPES = new Set(["T_AGENT_FIRST_VUCAR_OFFER", "T_AGENT_VUCAR_OFFER_SUBSEQUENT"]);

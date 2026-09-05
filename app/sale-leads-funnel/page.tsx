@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowDownUp,
   CalendarDays,
+  Check,
   Clipboard,
   FileText,
   Image,
@@ -20,6 +21,7 @@ import {
 import {
   SALE_LEAD_STAGE_CONFIG,
   formatMillionShort,
+  getSaleLeadStageTone,
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
@@ -252,6 +254,19 @@ function senderTagClass(kind: "ai" | "human" | "customer") {
   return "border-slate-200 bg-white text-slate-500";
 }
 
+function StageBadge({ stage }: { stage: SaleLeadWorkStage }) {
+  return (
+    <span
+      className={classNames(
+        "inline-flex max-w-[144px] items-center rounded-full border px-2.5 py-1 text-xs font-semibold",
+        getSaleLeadStageTone(stage).badgeClass,
+      )}
+    >
+      <span className="truncate">{stageLabel(stage)}</span>
+    </span>
+  );
+}
+
 function CountFilterButton({
   active,
   count,
@@ -269,10 +284,10 @@ function CountFilterButton({
 }) {
   const activeClass =
     tone === "sky"
-      ? "border-sky-700 bg-sky-700 text-white"
+      ? "border-sky-200 bg-sky-50 text-sky-800"
       : tone === "teal"
-        ? "border-teal-700 bg-teal-700 text-white"
-        : "border-slate-900 bg-slate-900 text-white";
+        ? "border-teal-200 bg-teal-50 text-teal-800"
+        : "border-slate-300 bg-slate-100 text-slate-900";
 
   return (
     <button
@@ -280,12 +295,12 @@ function CountFilterButton({
       title={title}
       onClick={onClick}
       className={classNames(
-        "flex h-8 min-w-0 items-center justify-between gap-2 border px-2 text-left text-xs font-medium hover:bg-slate-50",
+        "flex h-8 min-w-0 items-center justify-between gap-2 rounded-md border px-2 text-left text-xs font-medium shadow-sm shadow-slate-200/30 transition hover:-translate-y-px hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-100",
         active ? activeClass : "border-slate-200 bg-white text-slate-800",
       )}
     >
       <span className="truncate">{label}</span>
-      <span className={classNames("shrink-0 text-[11px]", active ? "text-white/75" : "text-slate-400")}>{count}</span>
+      <span className={classNames("shrink-0 text-[11px]", active ? "text-current/70" : "text-slate-400")}>{count}</span>
     </button>
   );
 }
@@ -303,6 +318,7 @@ function FunnelClient() {
   const [selectedLead, setSelectedLead] = useState<FunnelLead | null>(null);
   const [detail, setDetail] = useState<LeadDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [copiedPhone, setCopiedPhone] = useState<string | null>(null);
   const dealerBidRows = useMemo(() => (detail ? groupDealerBidsByDealer(detail.dealerBids) : []), [detail]);
   const failureHighlights = useMemo(() => (detail ? buildFailureHighlights(detail.lead) : []), [detail]);
 
@@ -425,11 +441,13 @@ function FunnelClient() {
   const copyPhone = async (phone: string | null) => {
     if (!phone) return;
     await navigator.clipboard?.writeText(phone).catch(() => undefined);
+    setCopiedPhone(phone);
+    window.setTimeout(() => setCopiedPhone((current) => (current === phone ? null : current)), 1200);
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-950">
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white">
+    <div className="min-h-screen bg-[#f6f8fb] text-slate-950">
+      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
           <div>
             <div className="text-lg font-semibold tracking-tight">Sale Leads Funnel</div>
@@ -446,13 +464,13 @@ function FunnelClient() {
 
       <main className="grid gap-4 px-5 py-4 lg:grid-cols-[248px_minmax(0,1fr)]">
         <aside className="space-y-2 lg:sticky lg:top-[73px] lg:max-h-[calc(100vh-92px)] lg:overflow-y-auto">
-          <section className="space-y-2 border border-slate-200 bg-white p-2.5">
+          <section className="space-y-2 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-semibold">Bộ lọc</div>
               <button
                 type="button"
                 onClick={() => updateParams({})}
-                className="inline-flex size-7 items-center justify-center border border-slate-200 text-slate-600 hover:bg-slate-50"
+                className="inline-flex size-7 items-center justify-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-100"
                 aria-label="Tải lại"
                 title="Tải lại"
               >
@@ -467,13 +485,13 @@ function FunnelClient() {
                   type="date"
                   value={params.from}
                   onChange={(event) => updateParams({ from: event.target.value })}
-                  className="h-8 min-w-0 border border-slate-200 px-1.5 text-xs text-slate-900"
+                  className="h-8 min-w-0 rounded-md border border-slate-200 px-1.5 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
                 />
                 <input
                   type="date"
                   value={params.to}
                   onChange={(event) => updateParams({ to: event.target.value })}
-                  className="h-8 min-w-0 border border-slate-200 px-1.5 text-xs text-slate-900"
+                  className="h-8 min-w-0 rounded-md border border-slate-200 px-1.5 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
                 />
               </div>
             </label>
@@ -483,7 +501,7 @@ function FunnelClient() {
               <select
                 value={params.pic[0] || ""}
                 onChange={(event) => updateParams({ pic: event.target.value ? [event.target.value] : [] })}
-                className="h-8 border border-slate-200 px-2 text-xs text-slate-900"
+                className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
               >
                 <option value="">Tất cả PIC</option>
                 {data?.picOptions.map((pic) => (
@@ -499,7 +517,7 @@ function FunnelClient() {
               <select
                 value={params.sort}
                 onChange={(event) => updateParams({ sort: event.target.value as SortKey })}
-                className="h-8 border border-slate-200 px-2 text-xs text-slate-900"
+                className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
               >
                 {SORT_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -510,7 +528,7 @@ function FunnelClient() {
             </label>
           </section>
 
-          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
+          <section className="space-y-1.5 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
             <CountFilterButton
               active={
                 params.stage.length === 0 &&
@@ -535,7 +553,7 @@ function FunnelClient() {
             />
           </section>
 
-          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
+          <section className="space-y-1.5 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
             <FilterTitle>Trạng thái</FilterTitle>
             <div className="grid grid-cols-2 gap-1.5">
               <CountFilterButton
@@ -571,7 +589,7 @@ function FunnelClient() {
             </div>
           </section>
 
-          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
+          <section className="space-y-1.5 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
             <FilterTitle>Giai đoạn</FilterTitle>
             <div className="grid grid-cols-2 gap-1.5">
               {data?.stages.map((stage) => (
@@ -587,7 +605,7 @@ function FunnelClient() {
             </div>
           </section>
 
-          <section className="space-y-1.5 border border-slate-200 bg-white p-2.5">
+          <section className="space-y-1.5 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
             <FilterTitle>Gap giá</FilterTitle>
             <div className="grid grid-cols-2 gap-1.5">
               <CountFilterButton
@@ -618,7 +636,7 @@ function FunnelClient() {
             </div>
           )}
 
-          <section className="overflow-hidden border border-slate-200 bg-white">
+          <section className="overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/60">
             {error ? (
               <div className="flex h-64 flex-col items-center justify-center gap-2 text-sm text-red-600">
                 <Search className="size-6" />
@@ -631,13 +649,12 @@ function FunnelClient() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1260px] border-collapse text-sm">
-                  <thead className="bg-slate-100 text-left text-xs font-semibold text-slate-500">
+                <table className="w-full min-w-[1180px] border-separate border-spacing-0 text-sm">
+                  <thead className="bg-slate-50 text-left text-xs font-semibold text-slate-500">
                     <tr>
                       <th className="px-3 py-2">Xe</th>
                       <th className="px-3 py-2">Lead</th>
                       <th className="px-3 py-2">Giai đoạn</th>
-                      <th className="px-3 py-2">SĐT</th>
                       <th className="px-3 py-2">Gap</th>
                       <th className="px-3 py-2">Giá mong muốn</th>
                       <th className="px-3 py-2">Bid cao nhất</th>
@@ -653,7 +670,7 @@ function FunnelClient() {
                         <tr
                           key={lead.carId}
                           onClick={() => setSelectedLead(lead)}
-                          className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
+                          className="cursor-pointer border-t border-slate-100 transition hover:bg-sky-50/40"
                         >
                           <td className="px-3 py-3">
                             <div className="font-medium">{lead.carName}</div>
@@ -662,27 +679,29 @@ function FunnelClient() {
                             </div>
                           </td>
                           <td className="px-3 py-3">
-                            <div className="font-medium">{lead.leadName}</div>
-                            <div className="text-xs text-slate-500">{lead.picName}</div>
-                          </td>
-                          <td className="px-3 py-3">
-                            <span className="inline-flex max-w-[132px] items-center border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-700">
-                              <span className="truncate">{stageLabel(lead.workStage)}</span>
-                            </span>
-                          </td>
-                          <td className="px-3 py-3">
                             <button
                               type="button"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 copyPhone(lead.phone);
                               }}
-                              className="inline-flex items-center gap-1 border border-slate-200 px-2 py-1 hover:bg-white"
+                              className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 font-semibold text-slate-900 shadow-sm transition hover:border-sky-200 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                              title={lead.phone ? "Copy số điện thoại" : "Không có số điện thoại"}
                             >
                               <Phone className="size-3" />
                               {lead.phone || "-"}
-                              {lead.phone && <Clipboard className="size-3 text-slate-400" />}
+                              {lead.phone &&
+                                (copiedPhone === lead.phone ? (
+                                  <Check className="size-3 text-emerald-600" />
+                                ) : (
+                                  <Clipboard className="size-3 text-slate-400" />
+                                ))}
                             </button>
+                            <div className="mt-1.5 font-medium text-slate-700">{lead.leadName}</div>
+                            <div className="text-xs text-slate-500">{lead.picName}</div>
+                          </td>
+                          <td className="px-3 py-3">
+                            <StageBadge stage={lead.workStage} />
                           </td>
                           <td className="px-3 py-3 font-medium">{lead.gapLabel}</td>
                           <td className="px-3 py-3">{lead.priceCustomerLabel}</td>
@@ -707,7 +726,7 @@ function FunnelClient() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan={11} className="h-40 text-center text-slate-500">
+                        <td colSpan={10} className="h-40 text-center text-slate-500">
                           Không có lead khớp bộ lọc.
                         </td>
                       </tr>
@@ -724,7 +743,7 @@ function FunnelClient() {
                 type="button"
                 disabled={params.page <= 1}
                 onClick={() => updateParams({ page: params.page - 1 })}
-                className="border border-slate-200 bg-white px-3 py-2 text-sm disabled:opacity-50"
+                className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
               >
                 Trước
               </button>
@@ -735,7 +754,7 @@ function FunnelClient() {
                 type="button"
                 disabled={params.page >= data.totalPages}
                 onClick={() => updateParams({ page: params.page + 1 })}
-                className="border border-slate-200 bg-white px-3 py-2 text-sm disabled:opacity-50"
+                className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
               >
                 Sau
               </button>
@@ -745,12 +764,12 @@ function FunnelClient() {
       </main>
 
       {selectedLead && (
-        <div className="fixed inset-0 z-40 bg-slate-950/20" onClick={() => setSelectedLead(null)}>
+        <div className="fixed inset-0 z-40 bg-slate-950/25 backdrop-blur-[1px]" onClick={() => setSelectedLead(null)}>
           <aside
-            className="ml-auto h-full w-full max-w-[760px] overflow-y-auto bg-white shadow-2xl"
+            className="ml-auto h-full w-full max-w-[760px] overflow-y-auto bg-[#fbfcfe] shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-4">
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200/80 bg-white/95 px-5 py-4 backdrop-blur">
               <div>
                 <h1 className="pr-8 text-lg font-semibold">{selectedLead.carName}</h1>
                 <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
@@ -762,7 +781,7 @@ function FunnelClient() {
               <button
                 type="button"
                 onClick={() => setSelectedLead(null)}
-                className="inline-flex size-8 items-center justify-center border border-slate-200 hover:bg-slate-50"
+                className="inline-flex size-8 items-center justify-center rounded-md border border-slate-200 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-100"
                 aria-label="Đóng"
               >
                 <X className="size-4" />
@@ -776,8 +795,13 @@ function FunnelClient() {
               </div>
             ) : detail ? (
               <div className="space-y-4 px-5 pb-6">
-                <section className="grid gap-2 border-b border-slate-200 py-4 sm:grid-cols-3">
-                  <Info label="Stage" value={stageLabel(selectedLead.workStage)} />
+                <section className="grid gap-2 border-b border-slate-200/80 py-4 sm:grid-cols-3">
+                  <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm shadow-slate-200/40">
+                    <div className="text-[11px] font-medium text-slate-500">Stage</div>
+                    <div className="mt-1">
+                      <StageBadge stage={selectedLead.workStage} />
+                    </div>
+                  </div>
                   <Info label="Giá khách" value={formatMillionShort(detail.lead.priceCustomer)} />
                   <Info label="Bid CRM" value={formatMillionShort(detail.lead.priceHighestBid)} />
                   <Info label="Vị trí" value={detail.lead.location || "-"} />
@@ -790,18 +814,18 @@ function FunnelClient() {
                     <FileText className="size-4 text-sky-700" />
                     Ghi chú
                   </h2>
-                  <div className="border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-700">
+                  <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-3 text-sm leading-6 text-slate-700 shadow-sm shadow-slate-200/40">
                     {detail.lead.notes || "Chưa có ghi chú."}
                   </div>
                   {(selectedLead.workStage === "failed" || detail.lead.crmStage.toUpperCase() === "FAILED") && (
-                    <div className="mt-2 border border-rose-200 bg-rose-50 px-3 py-3 text-sm">
+                    <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 text-sm shadow-sm shadow-rose-100/60">
                       <div className="font-semibold text-rose-900">Lý do thất bại</div>
                       <p className="mt-1 leading-6 text-rose-800">{detail.lead.failureReason || "Chưa có lý do thất bại."}</p>
                       {failureHighlights.length > 0 && (
                         <div className="mt-3 space-y-2">
                           <div className="text-xs font-semibold text-rose-900">Highlights</div>
                           {failureHighlights.map((item) => (
-                            <div key={item.label} className="border border-rose-100 bg-white px-2 py-2 text-rose-900">
+                            <div key={item.label} className="rounded-md border border-rose-100 bg-white px-2 py-2 text-rose-900">
                               <span className="font-medium">{item.label}: </span>
                               <span>{item.value}</span>
                             </div>
@@ -817,9 +841,9 @@ function FunnelClient() {
                     <ArrowDownUp className="size-4 text-amber-600" />
                     Giá dealer đã trả
                   </h2>
-                  <div className="overflow-hidden border border-slate-200">
+                  <div className="overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
                     <table className="w-full text-sm">
-                      <thead className="bg-slate-100 text-left text-xs text-slate-500">
+                      <thead className="bg-slate-50 text-left text-xs text-slate-500">
                         <tr>
                           <th className="w-12 px-3 py-2">STT</th>
                           <th className="px-3 py-2">Tên dealer</th>
@@ -875,20 +899,20 @@ function FunnelClient() {
                     <MessageCircle className="size-4 text-sky-700" />
                     Hội thoại Zalo
                   </h2>
-                  <div className="max-h-[520px] space-y-2 overflow-y-auto border border-slate-200 bg-slate-50 p-3">
+                  <div className="max-h-[520px] space-y-2 overflow-y-auto rounded-lg border border-slate-200/80 bg-slate-50/70 p-3">
                     {detail.messages.length ? (
                       detail.messages.map((message) => (
                         <div
                           key={message.id}
                           className={classNames(
-                            "max-w-[86%] border bg-white px-3 py-2 text-sm",
-                            message.fromMe ? "ml-auto border-teal-200 text-slate-800" : "mr-auto border-slate-200 text-slate-900",
+                            "max-w-[86%] rounded-lg border bg-white px-3 py-2 text-sm shadow-sm shadow-slate-200/40",
+                            message.fromMe ? "ml-auto border-teal-100 text-slate-800" : "mr-auto border-slate-200 text-slate-900",
                           )}
                         >
                           <div className="mb-1 flex items-center justify-between gap-3 text-[11px] text-slate-400">
                             <span className="flex min-w-0 items-center gap-1.5">
                               <span className="truncate">{message.sender}</span>
-                              <span className={classNames("shrink-0 border px-1.5 py-0.5 text-[10px] font-semibold", senderTagClass(message.senderKind))}>
+                              <span className={classNames("shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold", senderTagClass(message.senderKind))}>
                                 {message.senderTag}
                               </span>
                             </span>
@@ -905,8 +929,8 @@ function FunnelClient() {
                               />
                             </a>
                           ) : message.type === "call" ? (
-                            <div className="inline-flex items-center gap-2 rounded-none border border-slate-200 bg-slate-50 px-3 py-2">
-                              <span className="inline-flex size-8 items-center justify-center border border-slate-200 bg-white text-sky-700">
+                            <div className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                              <span className="inline-flex size-8 items-center justify-center rounded-md border border-slate-200 bg-white text-sky-700">
                                 <Phone className="size-4" />
                               </span>
                               <span>
@@ -939,7 +963,7 @@ function FunnelClient() {
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border border-slate-200 bg-slate-50 px-3 py-2">
+    <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm shadow-slate-200/40">
       <div className="text-[11px] font-medium text-slate-500">{label}</div>
       <div className="mt-1 truncate text-sm font-semibold text-slate-900">{value}</div>
     </div>
