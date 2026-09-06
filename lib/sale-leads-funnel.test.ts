@@ -310,13 +310,13 @@ describe("calculateGapPercent", () => {
 
 describe("sale lead list filters", () => {
   const rows = [
-    { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: false },
-    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false },
-    { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: true },
-    { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false },
-    { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: true },
-    { workStage: "success", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false },
-    { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false, noHumanTouch: false, underTwoBids: false },
+    { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: false, hotLead: false },
+    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false },
+    { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: true, hotLead: true },
+    { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false, hotLead: true },
+    { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: true, hotLead: false },
+    { workStage: "success", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false, hotLead: false },
+    { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false },
   ] as SaleLeadFilterableRow[];
 
   it("filters leads by images and inspection status in addition to stage and gap", () => {
@@ -332,6 +332,7 @@ describe("sale lead list filters", () => {
     expect(filterSaleLeadRows(rows, { hasImages: true, inspected: false })).toEqual([rows[1]]);
     expect(filterSaleLeadRows(rows, { noHumanTouch: true })).toEqual([rows[0], rows[4]]);
     expect(filterSaleLeadRows(rows, { underTwoBids: true })).toEqual([rows[2], rows[4]]);
+    expect(filterSaleLeadRows(rows, { hotLead: true })).toEqual([rows[2], rows[3]]);
   });
 
   it("counts filter buttons from the full unfiltered row set", () => {
@@ -360,10 +361,11 @@ describe("sale lead list filters", () => {
       inspected: 3,
       noHumanTouch: 2,
       underTwoBids: 2,
+      hotLead: 2,
     });
   });
 
-  it("recounts other filter groups against the currently selected filters", () => {
+  it("recounts stages and gaps only against the selected status filters", () => {
     expect(getSaleLeadFilterFacets(rows, { hasImages: true })).toMatchObject({
       total: 4,
       stages: {
@@ -385,15 +387,61 @@ describe("sale lead list filters", () => {
         gt10: 0,
         no_price: 1,
       },
+      status: {
+        hasImages: 4,
+        inspected: 3,
+        noHumanTouch: 2,
+        underTwoBids: 2,
+        hotLead: 2,
+      },
+    });
+  });
+
+  it("does not let selected stage or gap filters change the sidebar counts", () => {
+    expect(getSaleLeadFilterFacets(rows, { gaps: ["lt5"] })).toMatchObject({
+      total: 7,
+      stages: {
+        need_contact: 1,
+        need_images: 1,
+        need_price_source: 0,
+        need_quote: 1,
+        need_inspection_booking: 0,
+        need_post_inspection_quote: 0,
+        follow_up_after_quote: 1,
+        delayed: 1,
+        failed: 1,
+        success: 1,
+        no_zalo: 0,
+      },
+      gaps: {
+        lt5: 3,
+        "5_10": 1,
+        gt10: 1,
+        no_price: 2,
+      },
+      status: {
+        hasImages: 4,
+        inspected: 3,
+        noHumanTouch: 2,
+        underTwoBids: 2,
+        hotLead: 2,
+      },
     });
 
-    expect(getSaleLeadFilterFacets(rows, { gaps: ["lt5"] })).toMatchObject({
-      total: 3,
+    expect(getSaleLeadFilterFacets(rows, { stages: ["need_quote"] })).toMatchObject({
+      total: 7,
+      gaps: {
+        lt5: 3,
+        "5_10": 1,
+        gt10: 1,
+        no_price: 2,
+      },
       status: {
-        hasImages: 2,
-        inspected: 2,
-        noHumanTouch: 1,
-        underTwoBids: 0,
+        hasImages: 4,
+        inspected: 3,
+        noHumanTouch: 2,
+        underTwoBids: 2,
+        hotLead: 2,
       },
     });
   });

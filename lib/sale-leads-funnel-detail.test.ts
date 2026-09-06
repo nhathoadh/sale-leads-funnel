@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { groupDealerBidsByDealer, mapZaloMessageForSaleLeadDetail } from "@/lib/sale-leads-funnel-detail";
+import {
+  buildSaleLeadExternalLinks,
+  groupDealerBidsByDealer,
+  mapZaloMessageForSaleLeadDetail,
+  selectSaleWorkspaceId,
+} from "@/lib/sale-leads-funnel-detail";
 
 describe("mapZaloMessageForSaleLeadDetail", () => {
   it("extracts Zalo photo URLs from JSON content", () => {
@@ -249,5 +254,73 @@ describe("groupDealerBidsByDealer", () => {
         diff: -50_000_000,
       },
     ]);
+  });
+});
+
+describe("buildSaleLeadExternalLinks", () => {
+  it("builds workspace links from phone, pic, Zalo relation, and sale workspace id", () => {
+    expect(
+      buildSaleLeadExternalLinks({
+        phone: "0983839880",
+        picId: "38c1ce38-6968-4b03-8957-2af40e441753",
+        zaloAccountId: "627910245087469231",
+        zaloFriendId: "5200139638818144819",
+        saleWorkspaceId: "9357eed7-1651-4f46-b60f-af5f934af9c9",
+      }),
+    ).toEqual([
+      {
+        key: "crm",
+        label: "CRM",
+        href: "https://dashboard.vucar.vn/crm-v2?search=0983839880&searchType=lead",
+      },
+      {
+        key: "e2e",
+        label: "E2E",
+        href: "https://e2e-management.vucar.vn/e2e/38c1ce38-6968-4b03-8957-2af40e441753?search=0983839880",
+      },
+      {
+        key: "zalo",
+        label: "Zalo",
+        href: "https://zl.vucar.vn/chat/627910245087469231/5200139638818144819",
+      },
+      {
+        key: "sale_workspace",
+        label: "Sale WS",
+        href: "https://saleworkspace.vucar.vn/session/9357eed7-1651-4f46-b60f-af5f934af9c9?from=chat&pic=38c1ce38-6968-4b03-8957-2af40e441753",
+      },
+    ]);
+  });
+
+  it("omits links that do not have enough identifiers", () => {
+    expect(buildSaleLeadExternalLinks({ phone: "0983839880", picId: null })).toEqual([
+      {
+        key: "crm",
+        label: "CRM",
+        href: "https://dashboard.vucar.vn/crm-v2?search=0983839880&searchType=lead",
+      },
+    ]);
+  });
+});
+
+describe("selectSaleWorkspaceId", () => {
+  it("falls back to the sibling car with bid evidence when event mapping is missing", () => {
+    expect(
+      selectSaleWorkspaceId({
+        eventWorkspaceId: null,
+        currentCarId: "ba502be4-11ff-4cb1-b440-90d69245e209",
+        relatedCars: [
+          {
+            carId: "ba502be4-11ff-4cb1-b440-90d69245e209",
+            priceHighestBid: null,
+            createdAt: "2026-08-25T06:41:05.107Z",
+          },
+          {
+            carId: "9fb475af-3211-4e27-9e2b-71bc1b9466f2",
+            priceHighestBid: 350_000_000,
+            createdAt: "2026-08-04T01:11:33.933Z",
+          },
+        ],
+      }),
+    ).toBe("9fb475af-3211-4e27-9e2b-71bc1b9466f2");
   });
 });

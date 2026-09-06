@@ -8,6 +8,7 @@ import {
   CalendarDays,
   Check,
   Clipboard,
+  ExternalLink,
   FileText,
   Image,
   Loader2,
@@ -52,6 +53,7 @@ interface FunnelLead {
   booked: boolean;
   noHumanTouch: boolean;
   underTwoBids: boolean;
+  hotLead: boolean;
   humanMessageCount: number;
   aiMessageCount: number;
   dealerBidDealerCount: number;
@@ -75,6 +77,7 @@ interface FunnelResponse {
     inspected?: boolean;
     noHumanTouch?: boolean;
     underTwoBids?: boolean;
+    hotLead?: boolean;
     sort: SortKey;
     page: number;
     perPage: number;
@@ -93,6 +96,7 @@ interface FunnelResponse {
     inspected: number;
     noHumanTouch: number;
     underTwoBids: number;
+    hotLead: number;
   };
   facets?: {
     total: number;
@@ -103,6 +107,7 @@ interface FunnelResponse {
       inspected: number;
       noHumanTouch: number;
       underTwoBids: number;
+      hotLead: number;
     };
   };
   stages: Array<(typeof SALE_LEAD_STAGE_CONFIG)[number] & { count: number }>;
@@ -172,6 +177,11 @@ interface LeadDetail {
     callDurationSeconds: number | null;
     callDurationLabel: string | null;
     callKind: "completed" | "missed" | null;
+  }>;
+  externalLinks: Array<{
+    key: "crm" | "e2e" | "zalo" | "sale_workspace";
+    label: string;
+    href: string;
   }>;
 }
 
@@ -332,9 +342,10 @@ function FunnelClient() {
     const inspected = searchParams.get("inspected") === "true";
     const noHumanTouch = searchParams.get("noHumanTouch") === "true";
     const underTwoBids = searchParams.get("underTwoBids") === "true";
+    const hotLead = searchParams.get("hotLead") === "true";
     const sort = (searchParams.get("sort") || "last_touch_oldest") as SortKey;
     const page = Number(searchParams.get("page") || 1);
-    return { from, to, pic, stage, gap, hasImages, inspected, noHumanTouch, underTwoBids, sort, page };
+    return { from, to, pic, stage, gap, hasImages, inspected, noHumanTouch, underTwoBids, hotLead, sort, page };
   }, [searchParams]);
 
   const updateParams = (patch: Partial<typeof params>) => {
@@ -355,6 +366,8 @@ function FunnelClient() {
     else next.delete("noHumanTouch");
     if (merged.underTwoBids) next.set("underTwoBids", "true");
     else next.delete("underTwoBids");
+    if (merged.hotLead) next.set("hotLead", "true");
+    else next.delete("hotLead");
     router.replace(`/sale-leads-funnel?${next.toString()}`);
   };
 
@@ -374,6 +387,7 @@ function FunnelClient() {
     if (params.inspected) url.searchParams.set("inspected", "true");
     if (params.noHumanTouch) url.searchParams.set("noHumanTouch", "true");
     if (params.underTwoBids) url.searchParams.set("underTwoBids", "true");
+    if (params.hotLead) url.searchParams.set("hotLead", "true");
 
     fetch(url.toString(), { signal: controller.signal })
       .then(async (response) => {
@@ -400,6 +414,7 @@ function FunnelClient() {
     params.inspected,
     params.noHumanTouch,
     params.underTwoBids,
+    params.hotLead,
     params.sort,
     params.page,
   ]);
@@ -536,10 +551,11 @@ function FunnelClient() {
                 !params.hasImages &&
                 !params.inspected &&
                 !params.noHumanTouch &&
-                !params.underTwoBids
+                !params.underTwoBids &&
+                !params.hotLead
               }
               label="Tất cả"
-              count={data?.counts?.total ?? data?.scanned ?? 0}
+              count={data?.facets?.total ?? data?.counts?.total ?? data?.scanned ?? 0}
               onClick={() =>
                 updateParams({
                   stage: [],
@@ -548,6 +564,7 @@ function FunnelClient() {
                   inspected: false,
                   noHumanTouch: false,
                   underTwoBids: false,
+                  hotLead: false,
                 })
               }
             />
@@ -585,6 +602,14 @@ function FunnelClient() {
                 tone="teal"
                 title="Có giá khách và dealer bid, nhưng dưới 2 dealer có bid hợp lệ."
                 onClick={() => updateParams({ underTwoBids: !params.underTwoBids })}
+              />
+              <CountFilterButton
+                active={params.hotLead}
+                label="Hot lead"
+                count={data?.facets?.status.hotLead ?? data?.counts?.hotLead ?? 0}
+                tone="teal"
+                title="Lead được đánh dấu hot lead trong CRM."
+                onClick={() => updateParams({ hotLead: !params.hotLead })}
               />
             </div>
           </section>
@@ -780,6 +805,22 @@ function FunnelClient() {
                   <span>{selectedLead.phone || "Không có SĐT"}</span>
                   <span>{selectedLead.picName}</span>
                 </div>
+                {detail?.externalLinks?.length ? (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {detail.externalLinks.map((link) => (
+                      <a
+                        key={link.key}
+                        href={link.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 shadow-sm shadow-slate-200/40 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-100"
+                      >
+                        {link.label}
+                        <ExternalLink className="size-3" />
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <button
                 type="button"

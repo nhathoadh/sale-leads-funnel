@@ -25,6 +25,43 @@ export interface SaleLeadDetailZaloMessage {
   callKind: "completed" | "missed" | null;
 }
 
+export interface SaleLeadExternalLinkInput {
+  phone?: string | null;
+  picId?: string | null;
+  zaloAccountId?: string | null;
+  zaloFriendId?: string | null;
+  saleWorkspaceId?: string | null;
+}
+
+export interface SaleLeadExternalLink {
+  key: "crm" | "e2e" | "zalo" | "sale_workspace";
+  label: string;
+  href: string;
+}
+
+export interface SaleWorkspaceCandidateCar {
+  carId?: string | null;
+  priceHighestBid?: number | string | null;
+  createdAt?: string | null;
+}
+
+export function selectSaleWorkspaceId(input: {
+  eventWorkspaceId?: string | null;
+  currentCarId?: string | null;
+  relatedCars?: SaleWorkspaceCandidateCar[];
+}) {
+  const eventWorkspaceId = input.eventWorkspaceId?.trim();
+  if (eventWorkspaceId) return eventWorkspaceId;
+
+  const currentCarId = input.currentCarId?.trim();
+  const relatedCars = (input.relatedCars ?? []).filter((car) => car.carId?.trim());
+  const withBidEvidence = relatedCars
+    .filter((car) => Number(car.priceHighestBid ?? 0) > 1_000_000)
+    .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+
+  return withBidEvidence[0]?.carId?.trim() || currentCarId || null;
+}
+
 function classifySender(message: SaleLeadDetailZaloMessageInput) {
   const source = String(message.source ?? "").toLowerCase();
   if (!message.is_self) {
@@ -34,6 +71,49 @@ function classifySender(message: SaleLeadDetailZaloMessageInput) {
     return { sender: "Vucar", senderKind: "ai" as const, senderTag: "AI" };
   }
   return { sender: "Vucar", senderKind: "human" as const, senderTag: "Human" };
+}
+
+export function buildSaleLeadExternalLinks(input: SaleLeadExternalLinkInput): SaleLeadExternalLink[] {
+  const links: SaleLeadExternalLink[] = [];
+  const phone = input.phone?.trim();
+  const picId = input.picId?.trim();
+  const zaloAccountId = input.zaloAccountId?.trim();
+  const zaloFriendId = input.zaloFriendId?.trim();
+  const saleWorkspaceId = input.saleWorkspaceId?.trim();
+
+  if (phone) {
+    links.push({
+      key: "crm",
+      label: "CRM",
+      href: `https://dashboard.vucar.vn/crm-v2?search=${encodeURIComponent(phone)}&searchType=lead`,
+    });
+  }
+
+  if (phone && picId) {
+    links.push({
+      key: "e2e",
+      label: "E2E",
+      href: `https://e2e-management.vucar.vn/e2e/${encodeURIComponent(picId)}?search=${encodeURIComponent(phone)}`,
+    });
+  }
+
+  if (zaloAccountId && zaloFriendId) {
+    links.push({
+      key: "zalo",
+      label: "Zalo",
+      href: `https://zl.vucar.vn/chat/${encodeURIComponent(zaloAccountId)}/${encodeURIComponent(zaloFriendId)}`,
+    });
+  }
+
+  if (saleWorkspaceId && picId) {
+    links.push({
+      key: "sale_workspace",
+      label: "Sale WS",
+      href: `https://saleworkspace.vucar.vn/session/${encodeURIComponent(saleWorkspaceId)}?from=chat&pic=${encodeURIComponent(picId)}`,
+    });
+  }
+
+  return links;
 }
 
 export interface SaleLeadDetailDealerBid {

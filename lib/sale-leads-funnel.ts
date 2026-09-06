@@ -20,6 +20,7 @@ export interface SaleLeadFilterableRow {
   inspected: boolean;
   noHumanTouch: boolean;
   underTwoBids: boolean;
+  hotLead: boolean;
 }
 
 export interface SaleLeadListFilters {
@@ -29,6 +30,7 @@ export interface SaleLeadListFilters {
   inspected?: boolean;
   noHumanTouch?: boolean;
   underTwoBids?: boolean;
+  hotLead?: boolean;
 }
 
 export interface SaleLeadFilterCounts {
@@ -39,6 +41,7 @@ export interface SaleLeadFilterCounts {
   inspected: number;
   noHumanTouch: number;
   underTwoBids: number;
+  hotLead: number;
 }
 
 export interface SaleLeadFilterFacets {
@@ -50,6 +53,7 @@ export interface SaleLeadFilterFacets {
     inspected: number;
     noHumanTouch: number;
     underTwoBids: number;
+    hotLead: number;
   };
 }
 
@@ -392,7 +396,8 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
     const inspectedOk = filters.inspected === undefined || row.inspected === filters.inspected;
     const humanTouchOk = filters.noHumanTouch === undefined || row.noHumanTouch === filters.noHumanTouch;
     const underTwoBidsOk = filters.underTwoBids === undefined || row.underTwoBids === filters.underTwoBids;
-    return stageOk && gapOk && imageOk && inspectedOk && humanTouchOk && underTwoBidsOk;
+    const hotLeadOk = filters.hotLead === undefined || row.hotLead === filters.hotLead;
+    return stageOk && gapOk && imageOk && inspectedOk && humanTouchOk && underTwoBidsOk && hotLeadOk;
   });
 }
 
@@ -404,6 +409,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
   let inspected = 0;
   let noHumanTouch = 0;
   let underTwoBids = 0;
+  let hotLead = 0;
   for (const row of rows) {
     stages[row.workStage] = (stages[row.workStage] ?? 0) + 1;
     gaps[row.gapBucket] = (gaps[row.gapBucket] ?? 0) + 1;
@@ -411,6 +417,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     if (row.inspected) inspected += 1;
     if (row.noHumanTouch) noHumanTouch += 1;
     if (row.underTwoBids) underTwoBids += 1;
+    if (row.hotLead) hotLead += 1;
   }
 
   return {
@@ -421,43 +428,31 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     inspected,
     noHumanTouch,
     underTwoBids,
+    hotLead,
   };
 }
 
 export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: SaleLeadListFilters): SaleLeadFilterFacets {
-  const total = filterSaleLeadRows(rows, filters).length;
-  const stageRows = filterSaleLeadRows(rows, {
-    gaps: filters.gaps,
+  const statusFilteredRows = filterSaleLeadRows(rows, {
     hasImages: filters.hasImages,
     inspected: filters.inspected,
     noHumanTouch: filters.noHumanTouch,
     underTwoBids: filters.underTwoBids,
+    hotLead: filters.hotLead,
   });
-  const gapRows = filterSaleLeadRows(rows, {
-    stages: filters.stages,
-    hasImages: filters.hasImages,
-    inspected: filters.inspected,
-    noHumanTouch: filters.noHumanTouch,
-    underTwoBids: filters.underTwoBids,
-  });
-  const statusRows = filterSaleLeadRows(rows, {
-    stages: filters.stages,
-    gaps: filters.gaps,
-  });
-
-  const stageCounts = getSaleLeadFilterCounts(stageRows).stages;
-  const gapCounts = getSaleLeadFilterCounts(gapRows).gaps;
-  const statusCounts = getSaleLeadFilterCounts(statusRows);
+  const statusScopedCounts = getSaleLeadFilterCounts(statusFilteredRows);
+  const allCounts = getSaleLeadFilterCounts(rows);
 
   return {
-    total,
-    stages: stageCounts,
-    gaps: gapCounts,
+    total: statusFilteredRows.length,
+    stages: statusScopedCounts.stages,
+    gaps: statusScopedCounts.gaps,
     status: {
-      hasImages: statusCounts.hasImages,
-      inspected: statusCounts.inspected,
-      noHumanTouch: statusCounts.noHumanTouch,
-      underTwoBids: statusCounts.underTwoBids,
+      hasImages: allCounts.hasImages,
+      inspected: allCounts.inspected,
+      noHumanTouch: allCounts.noHumanTouch,
+      underTwoBids: allCounts.underTwoBids,
+      hotLead: allCounts.hotLead,
     },
   };
 }

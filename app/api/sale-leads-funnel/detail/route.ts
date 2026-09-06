@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 
-import { vucarV2Query } from "@/lib/db";
+import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { biddings } from "@/lib/dealer-service";
 import { fetchZaloMessagesFromDb } from "@/lib/zalo-chat-fetcher";
 import { formatMillionShort } from "@/lib/sale-leads-funnel";
-import { mapZaloMessageForSaleLeadDetail } from "@/lib/sale-leads-funnel-detail";
+import {
+  buildSaleLeadExternalLinks,
+  mapZaloMessageForSaleLeadDetail,
+  selectSaleWorkspaceId,
+} from "@/lib/sale-leads-funnel-detail";
 
 export const dynamic = "force-dynamic";
 
@@ -100,7 +104,15 @@ export async function GET(request: Request) {
     if (result.rows.length === 0) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
 
     const row = result.rows[0];
-    const [rawBids, latestBids, messagesResult, activitiesResult] = await Promise.all([
+    const [
+      rawBids,
+      latestBids,
+      messagesResult,
+      activitiesResult,
+      zaloRelationResult,
+      saleWorkspaceResult,
+      relatedCarsResult,
+    ] = await Promise.all([
       biddings.listByCar(carId).catch(() => []),
       biddings.listLatestPerDealer(carId).catch(() => []),
       row.phone ? fetchZaloMessagesFromDb({ phone: String(row.phone), limit: 120 }) : Promise.resolve([]),
@@ -114,6 +126,48 @@ export async function GET(request: Request) {
          WHERE lead_id = $1::uuid
          ORDER BY created_at DESC
          LIMIT 40`,
+        [row.lead_id],
+      ).catch(() => ({ rows: [] })),
+      row.phone
+        ? vucarZaloQuery(
+            `SELECT account_id::text AS account_id, friend_id::text AS friend_id
+             FROM leads_relation
+             WHERE phone = $1
+             LIMIT 1`,
+            [String(row.phone)],
+          ).catch(() => ({ rows: [] }))
+        : Promise.resolve({ rows: [] }),
+      row.phone
+        ? vucarV2Query(
+            `SELECT car_id AS sale_workspace_id
+             FROM customer_funnel_event
+             WHERE phone = $1
+               AND car_id IS NOT NULL
+               AND BTRIM(car_id) <> ''
+             ORDER BY timestamp DESC
+             LIMIT 1`,
+            [String(row.phone)],
+          ).catch(() => ({ rows: [] }))
+        : Promise.resolve({ rows: [] }),
+      vucarV2Query(
+        `WITH latest_status AS (
+           SELECT DISTINCT ON (ss.car_id)
+             ss.car_id,
+             ss.price_highest_bid
+           FROM sale_status ss
+           JOIN cars c ON c.id = ss.car_id
+           WHERE c.lead_id = $1::uuid
+           ORDER BY ss.car_id, ss.updated_at DESC NULLS LAST, ss.created_at DESC NULLS LAST
+         )
+         SELECT
+           c.id::text AS car_id,
+           c.created_at,
+           ls.price_highest_bid
+         FROM cars c
+         LEFT JOIN latest_status ls ON ls.car_id = c.id
+         WHERE c.lead_id = $1::uuid
+           AND COALESCE(c.is_deleted, false) = false
+         ORDER BY c.created_at DESC`,
         [row.lead_id],
       ).catch(() => ({ rows: [] })),
     ]);
@@ -151,6 +205,24 @@ export async function GET(request: Request) {
     }));
 
     const messages = messagesResult.map(mapZaloMessageForSaleLeadDetail);
+    const zaloRelation = zaloRelationResult.rows[0] ?? null;
+    const saleWorkspace = saleWorkspaceResult.rows[0] ?? null;
+    const saleWorkspaceId = selectSaleWorkspaceId({
+      eventWorkspaceId: saleWorkspace?.sale_workspace_id ? String(saleWorkspace.sale_workspace_id) : null,
+      currentCarId: row.car_id ? String(row.car_id) : null,
+      relatedCars: relatedCarsResult.rows.map((car: any) => ({
+        carId: car.car_id ? String(car.car_id) : null,
+        priceHighestBid: car.price_highest_bid ?? null,
+        createdAt: car.created_at ?? null,
+      })),
+    });
+    const externalLinks = buildSaleLeadExternalLinks({
+      phone: row.phone ? String(row.phone) : null,
+      picId: row.pic_id ? String(row.pic_id) : null,
+      zaloAccountId: zaloRelation?.account_id ? String(zaloRelation.account_id) : null,
+      zaloFriendId: zaloRelation?.friend_id ? String(zaloRelation.friend_id) : null,
+      saleWorkspaceId,
+    });
 
     return NextResponse.json({
       lead: {
@@ -190,6 +262,7 @@ export async function GET(request: Request) {
       timeline,
       saleActivities: activitiesResult.rows,
       messages,
+      externalLinks,
     });
   } catch (error) {
     console.error("[sale-leads-funnel/detail] Error:", error);

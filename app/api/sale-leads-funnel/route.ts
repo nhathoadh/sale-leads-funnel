@@ -148,6 +148,7 @@ export async function GET(request: Request) {
     const inspectedFilter = parseBooleanFilter(searchParams.get("inspected"));
     const noHumanTouchFilter = parseBooleanFilter(searchParams.get("noHumanTouch"));
     const underTwoBidsFilter = parseBooleanFilter(searchParams.get("underTwoBids"));
+    const hotLeadFilter = parseBooleanFilter(searchParams.get("hotLead"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
 
     const queryParams: unknown[] = [from, to];
@@ -192,7 +193,8 @@ export async function GET(request: Request) {
          ss.first_payment_date,
          ss.qualified,
          ss.intention,
-         ss.negotiation_ability
+         ss.negotiation_ability,
+         ss.is_hot_lead
        FROM leads l
        JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
        LEFT JOIN latest_status ss ON ss.car_id = c.id
@@ -345,6 +347,7 @@ export async function GET(request: Request) {
         const dealerBidDealerCount = Number(bid.validDealerBidDealerCount ?? 0);
         const noHumanTouch = relationCount > 0 && humanMessageCount <= 0;
         const underTwoBids = hasCustomerAndDealerPrice && dealerBidDealerCount > 0 && dealerBidDealerCount < 2;
+        const hotLead = row.is_hot_lead === true;
         const gapPercent = calculateGapPercent(priceCustomer, fallbackHighestBid);
         const storedImageCount = countStoredVehicleImages(row.additional_images);
         const summaryHadImage = latest?.had_car_image === true || latest?.had_image === true;
@@ -411,6 +414,7 @@ export async function GET(request: Request) {
           hasImages,
           noHumanTouch,
           underTwoBids,
+          hotLead,
           humanMessageCount,
           aiMessageCount,
           dealerBidDealerCount,
@@ -437,6 +441,7 @@ export async function GET(request: Request) {
       inspected: inspectedFilter,
       noHumanTouch: noHumanTouchFilter,
       underTwoBids: underTwoBidsFilter,
+      hotLead: hotLeadFilter,
     };
     const facets = getSaleLeadFilterFacets(allRows, activeFilters);
     const filteredRows = filterSaleLeadRows(allRows, {
@@ -466,6 +471,7 @@ export async function GET(request: Request) {
         inspected: inspectedFilter,
         noHumanTouch: noHumanTouchFilter,
         underTwoBids: underTwoBidsFilter,
+        hotLead: hotLeadFilter,
         sort,
         page,
         perPage,
