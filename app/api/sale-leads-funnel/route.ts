@@ -7,10 +7,12 @@ import {
   calculateGapPercent,
   classifySaleLeadStage,
   countStoredVehicleImages,
+  extractSaleTextQuoteTimestamps,
   filterSaleLeadRows,
   formatMillionShort,
   getSaleLeadFilterCounts,
   getSaleLeadFilterFacets,
+  getOrderedSaleLeadFilterFacets,
   getGapBucket,
   getQuoteTimestamps,
   hasVehicleImagesFromSources,
@@ -149,6 +151,7 @@ export async function GET(request: Request) {
     const noHumanTouchFilter = parseBooleanFilter(searchParams.get("noHumanTouch"));
     const underTwoBidsFilter = parseBooleanFilter(searchParams.get("underTwoBids"));
     const hotLeadFilter = parseBooleanFilter(searchParams.get("hotLead"));
+    const filterOrder = parseCsv(searchParams.get("filterOrder"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
 
     const queryParams: unknown[] = [from, to];
@@ -254,7 +257,18 @@ export async function GET(request: Request) {
                      m.content LIKE '%recommened.calltime%'
                      OR m.content LIKE '%recommended.calltime%'
                    )
-               ) AS sale_completed_call_ts
+               ) AS sale_completed_call_ts,
+               JSONB_AGG(
+                 JSONB_BUILD_OBJECT('created_at', m.created_at, 'content', m.content)
+                 ORDER BY m.created_at
+               ) FILTER (
+                 WHERE m.is_self = true
+                   AND m.content IS NOT NULL
+                   AND BTRIM(m.content) NOT LIKE '{%'
+                   AND m.content ~* '[0-9]'
+                   AND m.content ~* '(tỷ|ty|tỉ|ti|tr|triệu|trieu)'
+                   AND m.content ~* '(giá|gia|trả|tra|mua|khách|khach|khoảng|khoang|tầm|tam|giao dịch|giao dich)'
+               ) AS sale_text_quote_messages
              FROM leads_relation lr
              LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
              WHERE lr.phone = ANY($1::text[])
@@ -376,6 +390,7 @@ export async function GET(request: Request) {
           priceVucarOffered: numberOrNull(latest?.price_vucar_offered),
           agentPricingEvents: extractAgentPricingEvents(signalByCar.get(row.car_id)),
           saleCompletedCallTs: normalizeTimestampArray(zalo?.sale_completed_call_ts),
+          saleTextQuoteTs: extractSaleTextQuoteTimestamps(zalo?.sale_text_quote_messages),
         };
         const workStage = classifySaleLeadStage(classifierInput);
         if (!workStage) return null;
@@ -420,7 +435,10 @@ export async function GET(request: Request) {
           dealerBidDealerCount,
           lastTouchAt,
           lastTouchHours: hoursSince(lastTouchAt),
+          lastSaleAt: zalo?.last_sale_at ? String(zalo.last_sale_at) : null,
           lastCustomerAt: zalo?.last_customer_at ? String(zalo.last_customer_at) : null,
+          latestPreInspectionBidAt: bid.latestPreInspectionBidAt,
+          latestPostInspectionBidAt: bid.latestPostInspectionBidAt,
           quoteTimestamps,
           imageCount: storedImageCount + customerZaloImageCount,
           priceCustomerLabel: formatMillionShort(priceCustomer),
@@ -443,7 +461,10 @@ export async function GET(request: Request) {
       underTwoBids: underTwoBidsFilter,
       hotLead: hotLeadFilter,
     };
-    const facets = getSaleLeadFilterFacets(allRows, activeFilters);
+    const facets =
+      filterOrder.length > 0
+        ? getOrderedSaleLeadFilterFacets(allRows, { filters: activeFilters, order: filterOrder })
+        : getSaleLeadFilterFacets(allRows, activeFilters);
     const filteredRows = filterSaleLeadRows(allRows, {
       ...activeFilters,
     });
@@ -472,6 +493,7 @@ export async function GET(request: Request) {
         noHumanTouch: noHumanTouchFilter,
         underTwoBids: underTwoBidsFilter,
         hotLead: hotLeadFilter,
+        filterOrder,
         sort,
         page,
         perPage,

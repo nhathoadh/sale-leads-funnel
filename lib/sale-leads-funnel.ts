@@ -55,7 +55,15 @@ export interface SaleLeadFilterFacets {
     underTwoBids: number;
     hotLead: number;
   };
+  groupTotals?: {
+    status: number;
+    stages: number;
+    gaps: number;
+  };
 }
+
+export type SaleLeadFilterGroup = "status" | "stage" | "gap";
+export type SaleLeadStatusFilterKey = "hasImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
 
 export interface AgentPricingEvent {
   type?: string | null;
@@ -88,6 +96,7 @@ export interface SaleLeadClassifierInput {
   priceVucarOffered?: number | null;
   agentPricingEvents?: AgentPricingEvents | null;
   saleCompletedCallTs?: string[] | null;
+  saleTextQuoteTs?: string[] | null;
 }
 
 export interface SaleLeadVehicleImageSources {
@@ -252,6 +261,41 @@ function addTimestamp(timestamps: string[], seen: Set<string>, value: string | n
   timestamps.push(value);
 }
 
+function normalizeSearchText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase();
+}
+
+const OUTBOUND_QUOTE_CONTEXT_RE =
+  /(gia|khung gia|muc gia|tra quanh|dang tra|ben mua|khach mua|mua duoc|giao dich|ket noi khach|ban duoc gia|duoc gia|can doi khoang|khoang nay|tam)/;
+const ABSOLUTE_CAR_PRICE_RE =
+  /\b\d+\s*(?:ty|ti|t)\s*\d{0,3}\s*(?:tr|trieu)?\b|\b[5-9]\d{2,3}\s*(?:tr|trieu)\b/;
+
+export function isSaleTextQuote(content: string | null | undefined) {
+  if (!content) return false;
+  const text = normalizeSearchText(content);
+  return OUTBOUND_QUOTE_CONTEXT_RE.test(text) && ABSOLUTE_CAR_PRICE_RE.test(text);
+}
+
+export function extractSaleTextQuoteTimestamps(
+  messages: Array<{ created_at?: string | Date | null; content?: string | null }> | null | undefined,
+) {
+  const timestamps: string[] = [];
+  const seen = new Set<string>();
+
+  for (const message of messages ?? []) {
+    const rawTimestamp = message.created_at;
+    const timestamp = rawTimestamp instanceof Date ? rawTimestamp.toISOString() : rawTimestamp ? String(rawTimestamp) : null;
+    if (isSaleTextQuote(message.content)) addTimestamp(timestamps, seen, timestamp);
+  }
+
+  return timestamps.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
+}
+
 export function getQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
   const timestamps: string[] = [];
   const seen = new Set<string>();
@@ -261,6 +305,10 @@ export function getQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
   }
 
   for (const ts of input.saleCompletedCallTs ?? []) {
+    addTimestamp(timestamps, seen, ts);
+  }
+
+  for (const ts of input.saleTextQuoteTs ?? []) {
     addTimestamp(timestamps, seen, ts);
   }
 
@@ -453,6 +501,136 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
       noHumanTouch: allCounts.noHumanTouch,
       underTwoBids: allCounts.underTwoBids,
       hotLead: allCounts.hotLead,
+    },
+    groupTotals: {
+      status: rows.length,
+      stages: statusFilteredRows.length,
+      gaps: statusFilteredRows.length,
+    },
+  };
+}
+
+const STATUS_FILTER_KEYS: SaleLeadStatusFilterKey[] = [
+  "hasImages",
+  "inspected",
+  "noHumanTouch",
+  "underTwoBids",
+  "hotLead",
+];
+
+const STAGE_KEYS = SALE_LEAD_STAGE_CONFIG.map((stage) => stage.key);
+
+function isStatusFilterKey(value: string): value is SaleLeadStatusFilterKey {
+  return STATUS_FILTER_KEYS.includes(value as SaleLeadStatusFilterKey);
+}
+
+function isStageKey(value: string): value is SaleLeadWorkStage {
+  return STAGE_KEYS.includes(value as SaleLeadWorkStage);
+}
+
+function isGapKey(value: string): value is SaleLeadGapBucket {
+  return GAP_BUCKETS.includes(value as SaleLeadGapBucket);
+}
+
+function groupFromToken(token: string): SaleLeadFilterGroup | null {
+  const [group] = token.split(":");
+  if (group === "status" || group === "stage" || group === "gap") return group;
+  return null;
+}
+
+function activeFilterTokens(filters: SaleLeadListFilters): string[] {
+  const tokens: string[] = [];
+  for (const key of STATUS_FILTER_KEYS) {
+    if (filters[key] === true) tokens.push(`status:${key}`);
+  }
+  for (const stage of filters.stages ?? []) {
+    if (isStageKey(stage)) tokens.push(`stage:${stage}`);
+  }
+  for (const gap of filters.gaps ?? []) {
+    if (isGapKey(gap)) tokens.push(`gap:${gap}`);
+  }
+  return tokens;
+}
+
+function orderedActiveTokens(filters: SaleLeadListFilters, order: string[]) {
+  const active = activeFilterTokens(filters);
+  const activeSet = new Set(active);
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+
+  for (const token of order) {
+    if (!activeSet.has(token) || seen.has(token)) continue;
+    ordered.push(token);
+    seen.add(token);
+  }
+
+  for (const token of active) {
+    if (seen.has(token)) continue;
+    ordered.push(token);
+    seen.add(token);
+  }
+
+  return ordered;
+}
+
+function filtersFromTokens(tokens: string[]): SaleLeadListFilters {
+  const filters: SaleLeadListFilters = {};
+
+  for (const token of tokens) {
+    const [group, value] = token.split(":");
+    if (group === "status" && isStatusFilterKey(value)) {
+      filters[value] = true;
+    } else if (group === "stage" && isStageKey(value)) {
+      filters.stages = [...(filters.stages ?? []), value];
+    } else if (group === "gap" && isGapKey(value)) {
+      filters.gaps = [...(filters.gaps ?? []), value];
+    }
+  }
+
+  return filters;
+}
+
+function scopeRowsForFilterGroup(
+  rows: SaleLeadFilterableRow[],
+  filters: SaleLeadListFilters,
+  order: string[],
+  group: SaleLeadFilterGroup,
+) {
+  const ordered = orderedActiveTokens(filters, order);
+  const firstGroupIndex = ordered.findIndex((token) => groupFromToken(token) === group);
+  const scopedTokens =
+    firstGroupIndex >= 0
+      ? ordered.slice(0, firstGroupIndex)
+      : ordered.filter((token) => groupFromToken(token) !== group);
+  return filterSaleLeadRows(rows, filtersFromTokens(scopedTokens));
+}
+
+export function getOrderedSaleLeadFilterFacets(
+  rows: SaleLeadFilterableRow[],
+  input: { filters: SaleLeadListFilters; order: string[] },
+): SaleLeadFilterFacets {
+  const statusRows = scopeRowsForFilterGroup(rows, input.filters, input.order, "status");
+  const stageRows = scopeRowsForFilterGroup(rows, input.filters, input.order, "stage");
+  const gapRows = scopeRowsForFilterGroup(rows, input.filters, input.order, "gap");
+  const statusCounts = getSaleLeadFilterCounts(statusRows);
+  const stageCounts = getSaleLeadFilterCounts(stageRows);
+  const gapCounts = getSaleLeadFilterCounts(gapRows);
+
+  return {
+    total: filterSaleLeadRows(rows, input.filters).length,
+    stages: stageCounts.stages,
+    gaps: gapCounts.gaps,
+    status: {
+      hasImages: statusCounts.hasImages,
+      inspected: statusCounts.inspected,
+      noHumanTouch: statusCounts.noHumanTouch,
+      underTwoBids: statusCounts.underTwoBids,
+      hotLead: statusCounts.hotLead,
+    },
+    groupTotals: {
+      status: statusRows.length,
+      stages: stageRows.length,
+      gaps: gapRows.length,
     },
   };
 }

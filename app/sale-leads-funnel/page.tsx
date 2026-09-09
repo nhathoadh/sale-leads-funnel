@@ -78,6 +78,7 @@ interface FunnelResponse {
     noHumanTouch?: boolean;
     underTwoBids?: boolean;
     hotLead?: boolean;
+    filterOrder: string[];
     sort: SortKey;
     page: number;
     perPage: number;
@@ -108,6 +109,11 @@ interface FunnelResponse {
       noHumanTouch: number;
       underTwoBids: number;
       hotLead: number;
+    };
+    groupTotals?: {
+      status: number;
+      stages: number;
+      gaps: number;
     };
   };
   stages: Array<(typeof SALE_LEAD_STAGE_CONFIG)[number] & { count: number }>;
@@ -198,6 +204,16 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
   { value: "gap_asc", label: "Gap nhỏ nhất" },
   { value: "gap_desc", label: "Gap lớn nhất" },
   { value: "created_desc", label: "Lead mới nhất" },
+];
+
+type StatusFilterKey = "hasImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
+
+const STATUS_FILTER_KEYS: StatusFilterKey[] = [
+  "hasImages",
+  "inspected",
+  "noHumanTouch",
+  "underTwoBids",
+  "hotLead",
 ];
 
 function todayInput() {
@@ -343,14 +359,46 @@ function FunnelClient() {
     const noHumanTouch = searchParams.get("noHumanTouch") === "true";
     const underTwoBids = searchParams.get("underTwoBids") === "true";
     const hotLead = searchParams.get("hotLead") === "true";
+    const filterOrder = searchParams.get("filterOrder")?.split(",").filter(Boolean) ?? [];
     const sort = (searchParams.get("sort") || "last_touch_oldest") as SortKey;
     const page = Number(searchParams.get("page") || 1);
-    return { from, to, pic, stage, gap, hasImages, inspected, noHumanTouch, underTwoBids, hotLead, sort, page };
+    return { from, to, pic, stage, gap, hasImages, inspected, noHumanTouch, underTwoBids, hotLead, filterOrder, sort, page };
   }, [searchParams]);
 
-  const updateParams = (patch: Partial<typeof params>) => {
+  const activeFilterTokensFor = (value: typeof params) => {
+    const tokens: string[] = [];
+    for (const key of STATUS_FILTER_KEYS) {
+      if (value[key]) tokens.push(`status:${key}`);
+    }
+    for (const stage of value.stage) tokens.push(`stage:${stage}`);
+    for (const gap of value.gap) tokens.push(`gap:${gap}`);
+    return tokens;
+  };
+
+  const normalizeFilterOrder = (order: string[], activeTokens: string[]) => {
+    const activeSet = new Set(activeTokens);
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+
+    for (const token of order) {
+      if (!activeSet.has(token) || seen.has(token)) continue;
+      normalized.push(token);
+      seen.add(token);
+    }
+
+    for (const token of activeTokens) {
+      if (seen.has(token)) continue;
+      normalized.push(token);
+      seen.add(token);
+    }
+
+    return normalized;
+  };
+
+  const updateParams = (patch: Partial<typeof params>, orderPatch?: string[]) => {
     const next = new URLSearchParams(searchParams.toString());
     const merged = { ...params, ...patch };
+    const filterOrder = normalizeFilterOrder(orderPatch ?? merged.filterOrder, activeFilterTokensFor(merged));
     next.set("from", merged.from);
     next.set("to", merged.to);
     next.set("sort", merged.sort);
@@ -368,6 +416,7 @@ function FunnelClient() {
     else next.delete("underTwoBids");
     if (merged.hotLead) next.set("hotLead", "true");
     else next.delete("hotLead");
+    setCsvParam(next, "filterOrder", filterOrder);
     router.replace(`/sale-leads-funnel?${next.toString()}`);
   };
 
@@ -388,6 +437,7 @@ function FunnelClient() {
     if (params.noHumanTouch) url.searchParams.set("noHumanTouch", "true");
     if (params.underTwoBids) url.searchParams.set("underTwoBids", "true");
     if (params.hotLead) url.searchParams.set("hotLead", "true");
+    setCsvParam(url.searchParams, "filterOrder", params.filterOrder);
 
     fetch(url.toString(), { signal: controller.signal })
       .then(async (response) => {
@@ -415,6 +465,7 @@ function FunnelClient() {
     params.noHumanTouch,
     params.underTwoBids,
     params.hotLead,
+    params.filterOrder.join(","),
     params.sort,
     params.page,
   ]);
@@ -439,18 +490,34 @@ function FunnelClient() {
     return () => controller.abort();
   }, [selectedLead]);
 
+  const toggleStatus = (key: StatusFilterKey) => {
+    const token = `status:${key}`;
+    const active = params[key];
+    const currentOrder = normalizeFilterOrder(params.filterOrder, activeFilterTokensFor(params));
+    const order = active ? currentOrder.filter((item) => item !== token) : [...currentOrder, token];
+    updateParams({ [key]: !active } as Partial<typeof params>, order);
+  };
+
   const toggleStage = (stage: SaleLeadWorkStage) => {
+    const token = `stage:${stage}`;
+    const active = params.stage.includes(stage);
     const next = params.stage.includes(stage)
       ? params.stage.filter((item) => item !== stage)
       : [...params.stage, stage];
-    updateParams({ stage: next });
+    const currentOrder = normalizeFilterOrder(params.filterOrder, activeFilterTokensFor(params));
+    const order = active ? currentOrder.filter((item) => item !== token) : [...currentOrder, token];
+    updateParams({ stage: next }, order);
   };
 
   const toggleGap = (gap: SaleLeadGapBucket) => {
+    const token = `gap:${gap}`;
+    const active = params.gap.includes(gap);
     const next = params.gap.includes(gap)
       ? params.gap.filter((item) => item !== gap)
       : [...params.gap, gap];
-    updateParams({ gap: next });
+    const currentOrder = normalizeFilterOrder(params.filterOrder, activeFilterTokensFor(params));
+    const order = active ? currentOrder.filter((item) => item !== token) : [...currentOrder, token];
+    updateParams({ gap: next }, order);
   };
 
   const copyPhone = async (phone: string | null) => {
@@ -555,7 +622,7 @@ function FunnelClient() {
                 !params.hotLead
               }
               label="Tất cả"
-              count={data?.facets?.total ?? data?.counts?.total ?? data?.scanned ?? 0}
+              count={data?.counts?.total ?? data?.scanned ?? 0}
               onClick={() =>
                 updateParams({
                   stage: [],
@@ -565,6 +632,7 @@ function FunnelClient() {
                   noHumanTouch: false,
                   underTwoBids: false,
                   hotLead: false,
+                  filterOrder: [],
                 })
               }
             />
@@ -578,14 +646,14 @@ function FunnelClient() {
                 label="Có ảnh"
                 count={data?.facets?.status.hasImages ?? data?.counts?.hasImages ?? 0}
                 tone="teal"
-                onClick={() => updateParams({ hasImages: !params.hasImages })}
+                onClick={() => toggleStatus("hasImages")}
               />
               <CountFilterButton
                 active={params.inspected}
                 label="Đã KĐ"
                 count={data?.facets?.status.inspected ?? data?.counts?.inspected ?? 0}
                 tone="teal"
-                onClick={() => updateParams({ inspected: !params.inspected })}
+                onClick={() => toggleStatus("inspected")}
               />
               <CountFilterButton
                 active={params.noHumanTouch}
@@ -593,7 +661,7 @@ function FunnelClient() {
                 count={data?.facets?.status.noHumanTouch ?? data?.counts?.noHumanTouch ?? 0}
                 tone="teal"
                 title="Có Zalo chat nhưng chưa có tin nhắn từ human sale."
-                onClick={() => updateParams({ noHumanTouch: !params.noHumanTouch })}
+                onClick={() => toggleStatus("noHumanTouch")}
               />
               <CountFilterButton
                 active={params.underTwoBids}
@@ -601,7 +669,7 @@ function FunnelClient() {
                 count={data?.facets?.status.underTwoBids ?? data?.counts?.underTwoBids ?? 0}
                 tone="teal"
                 title="Có giá khách và dealer bid, nhưng dưới 2 dealer có bid hợp lệ."
-                onClick={() => updateParams({ underTwoBids: !params.underTwoBids })}
+                onClick={() => toggleStatus("underTwoBids")}
               />
               <CountFilterButton
                 active={params.hotLead}
@@ -609,7 +677,7 @@ function FunnelClient() {
                 count={data?.facets?.status.hotLead ?? data?.counts?.hotLead ?? 0}
                 tone="teal"
                 title="Lead được đánh dấu hot lead trong CRM."
-                onClick={() => updateParams({ hotLead: !params.hotLead })}
+                onClick={() => toggleStatus("hotLead")}
               />
             </div>
           </section>
@@ -636,9 +704,9 @@ function FunnelClient() {
               <CountFilterButton
                 active={params.gap.length === 0}
                 label="Mọi gap"
-                count={data?.facets?.total ?? data?.counts?.total ?? data?.scanned ?? 0}
+                count={data?.facets?.groupTotals?.gaps ?? data?.facets?.total ?? data?.counts?.total ?? data?.scanned ?? 0}
                 tone="sky"
-                onClick={() => updateParams({ gap: [] })}
+                onClick={() => updateParams({ gap: [] }, params.filterOrder.filter((item) => !item.startsWith("gap:")))}
               />
               {GAP_OPTIONS.map((gap) => (
                 <CountFilterButton

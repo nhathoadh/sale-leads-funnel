@@ -5,11 +5,13 @@ import {
   calculateGapPercent,
   classifySaleLeadStage,
   filterSaleLeadRows,
+  getOrderedSaleLeadFilterFacets,
   getGapBucket,
   getSaleLeadFilterCounts,
   getSaleLeadFilterFacets,
   getQuoteTimestamps,
   getSaleLeadStageTone,
+  extractSaleTextQuoteTimestamps,
   hasQuotedAfter,
   hasVehicleImagesFromSources,
   summarizeDealerBids,
@@ -37,6 +39,7 @@ function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassif
     priceVucarOffered: null,
     agentPricingEvents: null,
     saleCompletedCallTs: [],
+    saleTextQuoteTs: [],
     ...overrides,
   };
 }
@@ -78,6 +81,33 @@ describe("getQuoteTimestamps", () => {
         }),
       ),
     ).toEqual(["2026-09-01T04:00:00.000Z"]);
+  });
+
+  it("treats outbound Zalo text price offers as quote timestamps", () => {
+    expect(
+      getQuoteTimestamps(
+        lead({
+          saleTextQuoteTs: ["2026-08-20T02:10:33.273Z"],
+        }),
+      ),
+    ).toEqual(["2026-08-20T02:10:33.273Z"]);
+  });
+});
+
+describe("extractSaleTextQuoteTimestamps", () => {
+  it("extracts quote-like outbound Zalo price messages without counting relative price comments", () => {
+    expect(
+      extractSaleTextQuoteTimestamps([
+        {
+          created_at: "2026-08-20T02:02:03.249Z",
+          content: "Em tìm được khách thiện chí mua cao hơn mấy bên khác 50-70tr rùi ạ.",
+        },
+        {
+          created_at: "2026-08-20T02:10:33.273Z",
+          content: "Dạ mặt bằng chung các bên mua họ đang trả quanh 1t2-1t220, em có khách mua được 1t270tr ạ",
+        },
+      ]),
+    ).toEqual(["2026-08-20T02:10:33.273Z"]);
   });
 });
 
@@ -130,6 +160,17 @@ describe("classifySaleLeadStage", () => {
       classifySaleLeadStage(
         lead({
           saleCompletedCallTs: ["2026-09-01T04:00:00.000Z"],
+        }),
+      ),
+    ).toBe("need_inspection_booking");
+  });
+
+  it("moves leads quoted through outbound Zalo text past the need-quote stage", () => {
+    expect(
+      classifySaleLeadStage(
+        lead({
+          latestPreInspectionBidAt: "2026-08-20T01:00:00.000Z",
+          saleTextQuoteTs: ["2026-08-20T02:10:33.273Z"],
         }),
       ),
     ).toBe("need_inspection_booking");
@@ -442,6 +483,72 @@ describe("sale lead list filters", () => {
         noHumanTouch: 2,
         underTwoBids: 2,
         hotLead: 2,
+      },
+    });
+  });
+
+  it("applies selected filters only forward according to the click order", () => {
+    expect(
+      getOrderedSaleLeadFilterFacets(rows, {
+        filters: {
+          hasImages: true,
+          gaps: ["lt5"],
+          stages: ["follow_up_after_quote"],
+        },
+        order: ["status:hasImages", "gap:lt5", "stage:follow_up_after_quote"],
+      }),
+    ).toMatchObject({
+      groupTotals: {
+        status: 7,
+        stages: 2,
+        gaps: 4,
+      },
+      status: {
+        hasImages: 4,
+        inspected: 3,
+      },
+      gaps: {
+        lt5: 2,
+        "5_10": 1,
+        gt10: 0,
+        no_price: 1,
+      },
+      stages: {
+        need_quote: 0,
+        follow_up_after_quote: 1,
+        success: 1,
+      },
+    });
+
+    expect(
+      getOrderedSaleLeadFilterFacets(rows, {
+        filters: {
+          hasImages: true,
+          gaps: ["lt5"],
+          stages: ["follow_up_after_quote"],
+        },
+        order: ["status:hasImages", "stage:follow_up_after_quote", "gap:lt5"],
+      }),
+    ).toMatchObject({
+      groupTotals: {
+        status: 7,
+        stages: 4,
+        gaps: 1,
+      },
+      status: {
+        hasImages: 4,
+        inspected: 3,
+      },
+      stages: {
+        need_quote: 1,
+        follow_up_after_quote: 1,
+        success: 1,
+      },
+      gaps: {
+        lt5: 1,
+        "5_10": 0,
+        gt10: 0,
+        no_price: 0,
       },
     });
   });
