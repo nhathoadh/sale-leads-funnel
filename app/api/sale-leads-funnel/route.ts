@@ -147,6 +147,7 @@ export async function GET(request: Request) {
     const stageFilter = parseCsv(searchParams.get("stage")) as SaleLeadWorkStage[];
     const gapFilter = parseCsv(searchParams.get("gap")) as SaleLeadGapBucket[];
     const hasImagesFilter = parseBooleanFilter(searchParams.get("hasImages"));
+    const noImagesFilter = parseBooleanFilter(searchParams.get("noImages"));
     const inspectedFilter = parseBooleanFilter(searchParams.get("inspected"));
     const noHumanTouchFilter = parseBooleanFilter(searchParams.get("noHumanTouch"));
     const underTwoBidsFilter = parseBooleanFilter(searchParams.get("underTwoBids"));
@@ -456,6 +457,7 @@ export async function GET(request: Request) {
       stages: stageFilter,
       gaps: gapFilter,
       hasImages: hasImagesFilter,
+      noImages: noImagesFilter,
       inspected: inspectedFilter,
       noHumanTouch: noHumanTouchFilter,
       underTwoBids: underTwoBidsFilter,
@@ -489,6 +491,7 @@ export async function GET(request: Request) {
         stage: stageFilter,
         gap: gapFilter,
         hasImages: hasImagesFilter,
+        noImages: noImagesFilter,
         inspected: inspectedFilter,
         noHumanTouch: noHumanTouchFilter,
         underTwoBids: underTwoBidsFilter,

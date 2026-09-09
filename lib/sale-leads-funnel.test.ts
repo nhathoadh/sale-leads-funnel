@@ -371,6 +371,7 @@ describe("sale lead list filters", () => {
     ).toEqual([rows[2], rows[3]]);
 
     expect(filterSaleLeadRows(rows, { hasImages: true, inspected: false })).toEqual([rows[1]]);
+    expect(filterSaleLeadRows(rows, { noImages: true })).toEqual([rows[0], rows[4], rows[6]]);
     expect(filterSaleLeadRows(rows, { noHumanTouch: true })).toEqual([rows[0], rows[4]]);
     expect(filterSaleLeadRows(rows, { underTwoBids: true })).toEqual([rows[2], rows[4]]);
     expect(filterSaleLeadRows(rows, { hotLead: true })).toEqual([rows[2], rows[3]]);
@@ -399,6 +400,7 @@ describe("sale lead list filters", () => {
         no_price: 2,
       },
       hasImages: 4,
+      noImages: 3,
       inspected: 3,
       noHumanTouch: 2,
       underTwoBids: 2,
@@ -430,6 +432,7 @@ describe("sale lead list filters", () => {
       },
       status: {
         hasImages: 4,
+        noImages: 3,
         inspected: 3,
         noHumanTouch: 2,
         underTwoBids: 2,
@@ -462,6 +465,7 @@ describe("sale lead list filters", () => {
       },
       status: {
         hasImages: 4,
+        noImages: 3,
         inspected: 3,
         noHumanTouch: 2,
         underTwoBids: 2,
@@ -479,6 +483,7 @@ describe("sale lead list filters", () => {
       },
       status: {
         hasImages: 4,
+        noImages: 3,
         inspected: 3,
         noHumanTouch: 2,
         underTwoBids: 2,

@@ -26,7 +26,7 @@ import {
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
-import { groupDealerBidsByDealer } from "@/lib/sale-leads-funnel-detail";
+import { groupDealerBidsByDealer, hasRealDealerBidPrice } from "@/lib/sale-leads-funnel-detail";
 
 type SortKey = "last_touch_oldest" | "last_touch_newest" | "gap_asc" | "gap_desc" | "created_desc";
 
@@ -74,6 +74,7 @@ interface FunnelResponse {
     stage: SaleLeadWorkStage[];
     gap: SaleLeadGapBucket[];
     hasImages?: boolean;
+    noImages?: boolean;
     inspected?: boolean;
     noHumanTouch?: boolean;
     underTwoBids?: boolean;
@@ -94,6 +95,7 @@ interface FunnelResponse {
     stages: Record<SaleLeadWorkStage, number>;
     gaps: Record<SaleLeadGapBucket, number>;
     hasImages: number;
+    noImages: number;
     inspected: number;
     noHumanTouch: number;
     underTwoBids: number;
@@ -105,6 +107,7 @@ interface FunnelResponse {
     gaps: Record<SaleLeadGapBucket, number>;
     status: {
       hasImages: number;
+      noImages: number;
       inspected: number;
       noHumanTouch: number;
       underTwoBids: number;
@@ -206,10 +209,11 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
   { value: "created_desc", label: "Lead mới nhất" },
 ];
 
-type StatusFilterKey = "hasImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
+type StatusFilterKey = "hasImages" | "noImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
 
 const STATUS_FILTER_KEYS: StatusFilterKey[] = [
   "hasImages",
+  "noImages",
   "inspected",
   "noHumanTouch",
   "underTwoBids",
@@ -355,6 +359,7 @@ function FunnelClient() {
     const stage = searchParams.get("stage")?.split(",").filter(Boolean) ?? [];
     const gap = searchParams.get("gap")?.split(",").filter(Boolean) ?? [];
     const hasImages = searchParams.get("hasImages") === "true";
+    const noImages = searchParams.get("noImages") === "true";
     const inspected = searchParams.get("inspected") === "true";
     const noHumanTouch = searchParams.get("noHumanTouch") === "true";
     const underTwoBids = searchParams.get("underTwoBids") === "true";
@@ -362,7 +367,7 @@ function FunnelClient() {
     const filterOrder = searchParams.get("filterOrder")?.split(",").filter(Boolean) ?? [];
     const sort = (searchParams.get("sort") || "last_touch_oldest") as SortKey;
     const page = Number(searchParams.get("page") || 1);
-    return { from, to, pic, stage, gap, hasImages, inspected, noHumanTouch, underTwoBids, hotLead, filterOrder, sort, page };
+    return { from, to, pic, stage, gap, hasImages, noImages, inspected, noHumanTouch, underTwoBids, hotLead, filterOrder, sort, page };
   }, [searchParams]);
 
   const activeFilterTokensFor = (value: typeof params) => {
@@ -408,6 +413,8 @@ function FunnelClient() {
     setCsvParam(next, "gap", merged.gap);
     if (merged.hasImages) next.set("hasImages", "true");
     else next.delete("hasImages");
+    if (merged.noImages) next.set("noImages", "true");
+    else next.delete("noImages");
     if (merged.inspected) next.set("inspected", "true");
     else next.delete("inspected");
     if (merged.noHumanTouch) next.set("noHumanTouch", "true");
@@ -433,6 +440,7 @@ function FunnelClient() {
     setCsvParam(url.searchParams, "stage", params.stage);
     setCsvParam(url.searchParams, "gap", params.gap);
     if (params.hasImages) url.searchParams.set("hasImages", "true");
+    if (params.noImages) url.searchParams.set("noImages", "true");
     if (params.inspected) url.searchParams.set("inspected", "true");
     if (params.noHumanTouch) url.searchParams.set("noHumanTouch", "true");
     if (params.underTwoBids) url.searchParams.set("underTwoBids", "true");
@@ -461,6 +469,7 @@ function FunnelClient() {
     params.stage.join(","),
     params.gap.join(","),
     params.hasImages,
+    params.noImages,
     params.inspected,
     params.noHumanTouch,
     params.underTwoBids,
@@ -494,8 +503,20 @@ function FunnelClient() {
     const token = `status:${key}`;
     const active = params[key];
     const currentOrder = normalizeFilterOrder(params.filterOrder, activeFilterTokensFor(params));
-    const order = active ? currentOrder.filter((item) => item !== token) : [...currentOrder, token];
-    updateParams({ [key]: !active } as Partial<typeof params>, order);
+    let order = active ? currentOrder.filter((item) => item !== token) : [...currentOrder, token];
+    const patch = { [key]: !active } as Partial<typeof params>;
+
+    if (!active && key === "hasImages") {
+      patch.noImages = false;
+      order = order.filter((item) => item !== "status:noImages");
+    }
+
+    if (!active && key === "noImages") {
+      patch.hasImages = false;
+      order = order.filter((item) => item !== "status:hasImages");
+    }
+
+    updateParams(patch, order);
   };
 
   const toggleStage = (stage: SaleLeadWorkStage) => {
@@ -616,6 +637,7 @@ function FunnelClient() {
                 params.stage.length === 0 &&
                 params.gap.length === 0 &&
                 !params.hasImages &&
+                !params.noImages &&
                 !params.inspected &&
                 !params.noHumanTouch &&
                 !params.underTwoBids &&
@@ -628,6 +650,7 @@ function FunnelClient() {
                   stage: [],
                   gap: [],
                   hasImages: false,
+                  noImages: false,
                   inspected: false,
                   noHumanTouch: false,
                   underTwoBids: false,
@@ -647,6 +670,14 @@ function FunnelClient() {
                 count={data?.facets?.status.hasImages ?? data?.counts?.hasImages ?? 0}
                 tone="teal"
                 onClick={() => toggleStatus("hasImages")}
+              />
+              <CountFilterButton
+                active={params.noImages}
+                label="Không ảnh"
+                count={data?.facets?.status.noImages ?? data?.counts?.noImages ?? 0}
+                tone="teal"
+                title="Lead chưa có ảnh xe từ Zalo hoặc kho ảnh xe."
+                onClick={() => toggleStatus("noImages")}
               />
               <CountFilterButton
                 active={params.inspected}
@@ -1089,6 +1120,15 @@ function DealerBidCell({
 }) {
   if (!bid) {
     return <span className="text-sm italic text-slate-400">Chưa có giá</span>;
+  }
+
+  if (!hasRealDealerBidPrice(bid)) {
+    return (
+      <div>
+        <div className="text-sm font-semibold text-slate-500">Đã chào, chưa có giá</div>
+        <div className="mt-1 text-xs text-slate-400">{formatDateTime(bid.createdAt)}</div>
+      </div>
+    );
   }
 
   return (

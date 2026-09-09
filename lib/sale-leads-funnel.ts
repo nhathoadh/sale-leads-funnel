@@ -27,6 +27,7 @@ export interface SaleLeadListFilters {
   stages?: SaleLeadWorkStage[];
   gaps?: SaleLeadGapBucket[];
   hasImages?: boolean;
+  noImages?: boolean;
   inspected?: boolean;
   noHumanTouch?: boolean;
   underTwoBids?: boolean;
@@ -40,6 +41,7 @@ export interface SaleLeadFilterCounts {
   hasImages: number;
   inspected: number;
   noHumanTouch: number;
+  noImages: number;
   underTwoBids: number;
   hotLead: number;
 }
@@ -50,6 +52,7 @@ export interface SaleLeadFilterFacets {
   gaps: Record<SaleLeadGapBucket, number>;
   status: {
     hasImages: number;
+    noImages: number;
     inspected: number;
     noHumanTouch: number;
     underTwoBids: number;
@@ -63,7 +66,7 @@ export interface SaleLeadFilterFacets {
 }
 
 export type SaleLeadFilterGroup = "status" | "stage" | "gap";
-export type SaleLeadStatusFilterKey = "hasImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
+export type SaleLeadStatusFilterKey = "hasImages" | "noImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
 
 export interface AgentPricingEvent {
   type?: string | null;
@@ -441,11 +444,12 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
     const stageOk = !filters.stages?.length || filters.stages.includes(row.workStage);
     const gapOk = !filters.gaps?.length || filters.gaps.includes(row.gapBucket);
     const imageOk = filters.hasImages === undefined || row.hasImages === filters.hasImages;
+    const noImageOk = filters.noImages === undefined || row.hasImages !== filters.noImages;
     const inspectedOk = filters.inspected === undefined || row.inspected === filters.inspected;
     const humanTouchOk = filters.noHumanTouch === undefined || row.noHumanTouch === filters.noHumanTouch;
     const underTwoBidsOk = filters.underTwoBids === undefined || row.underTwoBids === filters.underTwoBids;
     const hotLeadOk = filters.hotLead === undefined || row.hotLead === filters.hotLead;
-    return stageOk && gapOk && imageOk && inspectedOk && humanTouchOk && underTwoBidsOk && hotLeadOk;
+    return stageOk && gapOk && imageOk && noImageOk && inspectedOk && humanTouchOk && underTwoBidsOk && hotLeadOk;
   });
 }
 
@@ -473,6 +477,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     stages,
     gaps,
     hasImages,
+    noImages: rows.length - hasImages,
     inspected,
     noHumanTouch,
     underTwoBids,
@@ -483,6 +488,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
 export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: SaleLeadListFilters): SaleLeadFilterFacets {
   const statusFilteredRows = filterSaleLeadRows(rows, {
     hasImages: filters.hasImages,
+    noImages: filters.noImages,
     inspected: filters.inspected,
     noHumanTouch: filters.noHumanTouch,
     underTwoBids: filters.underTwoBids,
@@ -497,6 +503,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
     gaps: statusScopedCounts.gaps,
     status: {
       hasImages: allCounts.hasImages,
+      noImages: allCounts.noImages,
       inspected: allCounts.inspected,
       noHumanTouch: allCounts.noHumanTouch,
       underTwoBids: allCounts.underTwoBids,
@@ -512,6 +519,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
 
 const STATUS_FILTER_KEYS: SaleLeadStatusFilterKey[] = [
   "hasImages",
+  "noImages",
   "inspected",
   "noHumanTouch",
   "underTwoBids",
@@ -622,6 +630,7 @@ export function getOrderedSaleLeadFilterFacets(
     gaps: gapCounts.gaps,
     status: {
       hasImages: statusCounts.hasImages,
+      noImages: statusCounts.noImages,
       inspected: statusCounts.inspected,
       noHumanTouch: statusCounts.noHumanTouch,
       underTwoBids: statusCounts.underTwoBids,

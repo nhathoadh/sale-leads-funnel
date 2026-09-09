@@ -255,6 +255,105 @@ describe("groupDealerBidsByDealer", () => {
       },
     ]);
   });
+
+  it("keeps sent dealer rows without treating sentinel prices as real prices", () => {
+    expect(
+      groupDealerBidsByDealer([
+        {
+          id: "sent-pre",
+          dealerId: "dealer-a",
+          dealerName: "Hách Nguyễn",
+          price: 1,
+          priceLabel: "Đã chào, chưa có giá",
+          version: 1,
+          phase: "pre_inspection",
+          createdAt: "2026-08-04T10:00:00.000Z",
+          comment: null,
+        },
+        {
+          id: "post",
+          dealerId: "dealer-a",
+          dealerName: "Hách Nguyễn",
+          price: 550_000_000,
+          priceLabel: "550M",
+          version: 2,
+          phase: "post_inspection",
+          createdAt: "2026-08-27T02:40:00.000Z",
+          comment: null,
+        },
+      ]),
+    ).toEqual([
+      {
+        dealerId: "dealer-a",
+        dealerName: "Hách Nguyễn",
+        preInspection: expect.objectContaining({ price: 1, priceLabel: "Đã chào, chưa có giá" }),
+        postInspection: expect.objectContaining({ price: 550_000_000, priceLabel: "550M" }),
+        diff: null,
+      },
+    ]);
+  });
+
+  it("sorts dealers by real post-inspection price first, then real pre-inspection price, before sent-only dealers", () => {
+    const rows = groupDealerBidsByDealer([
+      {
+        id: "a-pre-high",
+        dealerId: "dealer-a",
+        dealerName: "A có hậu kiểm thấp",
+        price: 700_000_000,
+        priceLabel: "700M",
+        version: 1,
+        phase: "pre_inspection",
+        createdAt: "2026-08-04T10:00:00.000Z",
+        comment: null,
+      },
+      {
+        id: "a-post-low",
+        dealerId: "dealer-a",
+        dealerName: "A có hậu kiểm thấp",
+        price: 500_000_000,
+        priceLabel: "500M",
+        version: 2,
+        phase: "post_inspection",
+        createdAt: "2026-08-27T02:40:00.000Z",
+        comment: null,
+      },
+      {
+        id: "b-pre-only",
+        dealerId: "dealer-b",
+        dealerName: "B chỉ có trước KĐ",
+        price: 650_000_000,
+        priceLabel: "650M",
+        version: 1,
+        phase: "pre_inspection",
+        createdAt: "2026-08-05T10:00:00.000Z",
+        comment: null,
+      },
+      {
+        id: "c-sent-only",
+        dealerId: "dealer-c",
+        dealerName: "C chưa bấm giá",
+        price: 1,
+        priceLabel: "Đã chào, chưa có giá",
+        version: 1,
+        phase: "pre_inspection",
+        createdAt: "2026-09-01T10:00:00.000Z",
+        comment: null,
+      },
+      {
+        id: "d-post-high",
+        dealerId: "dealer-d",
+        dealerName: "D hậu kiểm cao",
+        price: 680_000_000,
+        priceLabel: "680M",
+        version: 2,
+        phase: "post_inspection",
+        createdAt: "2026-08-20T10:00:00.000Z",
+        comment: null,
+      },
+    ]);
+
+    expect(rows.map((row) => row.dealerId)).toEqual(["dealer-d", "dealer-b", "dealer-a", "dealer-c"]);
+  });
 });
 
 describe("buildSaleLeadExternalLinks", () => {

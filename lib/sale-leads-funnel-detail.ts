@@ -141,6 +141,23 @@ function newerBid(a: SaleLeadDetailDealerBid | null, b: SaleLeadDetailDealerBid)
   return new Date(b.createdAt).getTime() > new Date(a.createdAt).getTime() ? b : a;
 }
 
+export function hasRealDealerBidPrice(bid: SaleLeadDetailDealerBid | null) {
+  return Number(bid?.price ?? 0) > 1_000_000;
+}
+
+function dealerBidPriorityPrice(row: SaleLeadDealerBidRow) {
+  if (hasRealDealerBidPrice(row.postInspection)) return row.postInspection?.price ?? null;
+  if (hasRealDealerBidPrice(row.preInspection)) return row.preInspection?.price ?? null;
+  return null;
+}
+
+function latestDealerBidTime(row: SaleLeadDealerBidRow) {
+  return Math.max(
+    row.preInspection ? new Date(row.preInspection.createdAt).getTime() : 0,
+    row.postInspection ? new Date(row.postInspection.createdAt).getTime() : 0,
+  );
+}
+
 export function groupDealerBidsByDealer(bids: SaleLeadDetailDealerBid[]): SaleLeadDealerBidRow[] {
   const rows = new Map<string, SaleLeadDealerBidRow>();
 
@@ -164,23 +181,27 @@ export function groupDealerBidsByDealer(bids: SaleLeadDetailDealerBid[]): SaleLe
   }
 
   return Array.from(rows.values())
-    .map((row) => ({
-      ...row,
-      diff:
-        row.preInspection && row.postInspection
-          ? row.postInspection.price - row.preInspection.price
-          : null,
-    }))
+    .map((row) => {
+      const preInspection = row.preInspection;
+      const postInspection = row.postInspection;
+      return {
+        ...row,
+        diff:
+          preInspection &&
+          postInspection &&
+          hasRealDealerBidPrice(preInspection) &&
+          hasRealDealerBidPrice(postInspection)
+            ? postInspection.price - preInspection.price
+            : null,
+      };
+    })
     .sort((a, b) => {
-      const aTime = Math.max(
-        a.preInspection ? new Date(a.preInspection.createdAt).getTime() : 0,
-        a.postInspection ? new Date(a.postInspection.createdAt).getTime() : 0,
-      );
-      const bTime = Math.max(
-        b.preInspection ? new Date(b.preInspection.createdAt).getTime() : 0,
-        b.postInspection ? new Date(b.postInspection.createdAt).getTime() : 0,
-      );
-      return bTime - aTime;
+      const aPrice = dealerBidPriorityPrice(a);
+      const bPrice = dealerBidPriorityPrice(b);
+      if (aPrice !== null && bPrice !== null && aPrice !== bPrice) return bPrice - aPrice;
+      if (aPrice !== null && bPrice === null) return -1;
+      if (aPrice === null && bPrice !== null) return 1;
+      return latestDealerBidTime(b) - latestDealerBidTime(a);
     });
 }
 

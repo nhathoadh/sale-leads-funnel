@@ -179,7 +179,7 @@ export async function GET(request: Request) {
         dealerId: bid.dealer_id,
         dealerName: dealerNames.get(bid.dealer_id) || bid.dealer_name || "Unknown Dealer",
         price: Number(bid.price ?? 0),
-        priceLabel: formatMillionShort(Number(bid.price ?? 0)),
+        priceLabel: Number(bid.price ?? 0) > 1_000_000 ? formatMillionShort(Number(bid.price ?? 0)) : "Đã chào, chưa có giá",
         version: Number(bid.version ?? 1),
         phase: Number(bid.version ?? 1) >= 2 ? "post_inspection" : "pre_inspection",
         createdAt: bid.created_at,
@@ -188,7 +188,7 @@ export async function GET(request: Request) {
         autoCapture: Boolean(bid.auto_capture),
         autoSend: bid.auto_send ?? null,
       }))
-      .filter((bid) => bid.price > 1_000_000)
+      .filter((bid) => bid.price >= 1 && bid.isInterested !== false)
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     const snapshots = snapshotsFromResult(row.summary_result);
