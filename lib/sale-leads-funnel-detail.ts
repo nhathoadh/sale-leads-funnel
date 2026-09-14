@@ -136,6 +136,11 @@ export interface SaleLeadDealerBidRow {
   diff: number | null;
 }
 
+export function formatCrmValue(value: string | number | boolean | null | undefined) {
+  const text = String(value ?? "").trim();
+  return text || "-";
+}
+
 function newerBid(a: SaleLeadDetailDealerBid | null, b: SaleLeadDetailDealerBid) {
   if (!a) return b;
   return new Date(b.createdAt).getTime() > new Date(a.createdAt).getTime() ? b : a;

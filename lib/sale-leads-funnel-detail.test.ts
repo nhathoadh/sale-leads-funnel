@@ -2,10 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSaleLeadExternalLinks,
+  formatCrmValue,
   groupDealerBidsByDealer,
   mapZaloMessageForSaleLeadDetail,
   selectSaleWorkspaceId,
 } from "@/lib/sale-leads-funnel-detail";
+
+describe("formatCrmValue", () => {
+  it("shows a dash for empty CRM values and keeps populated values", () => {
+    expect(formatCrmValue(null)).toBe("-");
+    expect(formatCrmValue(undefined)).toBe("-");
+    expect(formatCrmValue("   ")).toBe("-");
+    expect(formatCrmValue("DEPOSIT_PAID")).toBe("DEPOSIT_PAID");
+  });
+});
 
 describe("mapZaloMessageForSaleLeadDetail", () => {
   it("extracts Zalo photo URLs from JSON content", () => {

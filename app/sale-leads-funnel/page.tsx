@@ -26,7 +26,7 @@ import {
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
-import { groupDealerBidsByDealer, hasRealDealerBidPrice } from "@/lib/sale-leads-funnel-detail";
+import { formatCrmValue, groupDealerBidsByDealer, hasRealDealerBidPrice } from "@/lib/sale-leads-funnel-detail";
 
 type SortKey = "last_touch_oldest" | "last_touch_newest" | "gap_asc" | "gap_desc" | "created_desc";
 
@@ -54,6 +54,8 @@ interface FunnelLead {
   noHumanTouch: boolean;
   underTwoBids: boolean;
   hotLead: boolean;
+  needsInspectionBooking: boolean;
+  needsPostInspectionQuote: boolean;
   humanMessageCount: number;
   aiMessageCount: number;
   dealerBidDealerCount: number;
@@ -79,6 +81,8 @@ interface FunnelResponse {
     noHumanTouch?: boolean;
     underTwoBids?: boolean;
     hotLead?: boolean;
+    needsInspectionBooking?: boolean;
+    needsPostInspectionQuote?: boolean;
     filterOrder: string[];
     sort: SortKey;
     page: number;
@@ -100,6 +104,8 @@ interface FunnelResponse {
     noHumanTouch: number;
     underTwoBids: number;
     hotLead: number;
+    needsInspectionBooking: number;
+    needsPostInspectionQuote: number;
   };
   facets?: {
     total: number;
@@ -112,6 +118,8 @@ interface FunnelResponse {
       noHumanTouch: number;
       underTwoBids: number;
       hotLead: number;
+      needsInspectionBooking: number;
+      needsPostInspectionQuote: number;
     };
     groupTotals?: {
       status: number;
@@ -209,7 +217,15 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
   { value: "created_desc", label: "Lead mới nhất" },
 ];
 
-type StatusFilterKey = "hasImages" | "noImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
+type StatusFilterKey =
+  | "hasImages"
+  | "noImages"
+  | "inspected"
+  | "noHumanTouch"
+  | "underTwoBids"
+  | "hotLead"
+  | "needsInspectionBooking"
+  | "needsPostInspectionQuote";
 
 const STATUS_FILTER_KEYS: StatusFilterKey[] = [
   "hasImages",
@@ -218,6 +234,8 @@ const STATUS_FILTER_KEYS: StatusFilterKey[] = [
   "noHumanTouch",
   "underTwoBids",
   "hotLead",
+  "needsInspectionBooking",
+  "needsPostInspectionQuote",
 ];
 
 function todayInput() {
@@ -364,10 +382,29 @@ function FunnelClient() {
     const noHumanTouch = searchParams.get("noHumanTouch") === "true";
     const underTwoBids = searchParams.get("underTwoBids") === "true";
     const hotLead = searchParams.get("hotLead") === "true";
+    const needsInspectionBooking = searchParams.get("needsInspectionBooking") === "true";
+    const needsPostInspectionQuote = searchParams.get("needsPostInspectionQuote") === "true";
     const filterOrder = searchParams.get("filterOrder")?.split(",").filter(Boolean) ?? [];
     const sort = (searchParams.get("sort") || "last_touch_oldest") as SortKey;
     const page = Number(searchParams.get("page") || 1);
-    return { from, to, pic, stage, gap, hasImages, noImages, inspected, noHumanTouch, underTwoBids, hotLead, filterOrder, sort, page };
+    return {
+      from,
+      to,
+      pic,
+      stage,
+      gap,
+      hasImages,
+      noImages,
+      inspected,
+      noHumanTouch,
+      underTwoBids,
+      hotLead,
+      needsInspectionBooking,
+      needsPostInspectionQuote,
+      filterOrder,
+      sort,
+      page,
+    };
   }, [searchParams]);
 
   const activeFilterTokensFor = (value: typeof params) => {
@@ -423,6 +460,10 @@ function FunnelClient() {
     else next.delete("underTwoBids");
     if (merged.hotLead) next.set("hotLead", "true");
     else next.delete("hotLead");
+    if (merged.needsInspectionBooking) next.set("needsInspectionBooking", "true");
+    else next.delete("needsInspectionBooking");
+    if (merged.needsPostInspectionQuote) next.set("needsPostInspectionQuote", "true");
+    else next.delete("needsPostInspectionQuote");
     setCsvParam(next, "filterOrder", filterOrder);
     router.replace(`/sale-leads-funnel?${next.toString()}`);
   };
@@ -445,6 +486,8 @@ function FunnelClient() {
     if (params.noHumanTouch) url.searchParams.set("noHumanTouch", "true");
     if (params.underTwoBids) url.searchParams.set("underTwoBids", "true");
     if (params.hotLead) url.searchParams.set("hotLead", "true");
+    if (params.needsInspectionBooking) url.searchParams.set("needsInspectionBooking", "true");
+    if (params.needsPostInspectionQuote) url.searchParams.set("needsPostInspectionQuote", "true");
     setCsvParam(url.searchParams, "filterOrder", params.filterOrder);
 
     fetch(url.toString(), { signal: controller.signal })
@@ -474,6 +517,8 @@ function FunnelClient() {
     params.noHumanTouch,
     params.underTwoBids,
     params.hotLead,
+    params.needsInspectionBooking,
+    params.needsPostInspectionQuote,
     params.filterOrder.join(","),
     params.sort,
     params.page,
@@ -641,7 +686,9 @@ function FunnelClient() {
                 !params.inspected &&
                 !params.noHumanTouch &&
                 !params.underTwoBids &&
-                !params.hotLead
+                !params.hotLead &&
+                !params.needsInspectionBooking &&
+                !params.needsPostInspectionQuote
               }
               label="Tất cả"
               count={data?.counts?.total ?? data?.scanned ?? 0}
@@ -655,6 +702,8 @@ function FunnelClient() {
                   noHumanTouch: false,
                   underTwoBids: false,
                   hotLead: false,
+                  needsInspectionBooking: false,
+                  needsPostInspectionQuote: false,
                   filterOrder: [],
                 })
               }
@@ -709,6 +758,22 @@ function FunnelClient() {
                 tone="teal"
                 title="Lead được đánh dấu hot lead trong CRM."
                 onClick={() => toggleStatus("hotLead")}
+              />
+              <CountFilterButton
+                active={params.needsInspectionBooking}
+                label="Đặt KĐ"
+                count={data?.facets?.status.needsInspectionBooking ?? data?.counts?.needsInspectionBooking ?? 0}
+                tone="teal"
+                title="Lead có ảnh, trong vùng kiểm định, chưa đặt lịch và chưa kiểm định."
+                onClick={() => toggleStatus("needsInspectionBooking")}
+              />
+              <CountFilterButton
+                active={params.needsPostInspectionQuote}
+                label="Giá sau KĐ"
+                count={data?.facets?.status.needsPostInspectionQuote ?? data?.counts?.needsPostInspectionQuote ?? 0}
+                tone="teal"
+                title="Lead đã kiểm định, có bid sau KĐ, nhưng chưa báo giá sau bid đó."
+                onClick={() => toggleStatus("needsPostInspectionQuote")}
               />
             </div>
           </section>
@@ -940,11 +1005,14 @@ function FunnelClient() {
               <div className="space-y-4 px-5 pb-6">
                 <section className="grid gap-2 border-b border-slate-200/80 py-4 sm:grid-cols-3">
                   <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm shadow-slate-200/40">
-                    <div className="text-[11px] font-medium text-slate-500">Stage</div>
+                    <div className="text-[11px] font-medium text-slate-500">Giai đoạn phễu</div>
                     <div className="mt-1">
                       <StageBadge stage={selectedLead.workStage} />
                     </div>
                   </div>
+                  <Info label="Stage CRM" value={formatCrmValue(detail.lead.crmStage)} />
+                  <Info label="Qualified CRM" value={formatCrmValue(detail.lead.qualified)} />
+                  <Info label="Intention CRM" value={formatCrmValue(detail.lead.intention)} />
                   <Info label="Giá khách" value={formatMillionShort(detail.lead.priceCustomer)} />
                   <Info label="Bid CRM" value={formatMillionShort(detail.lead.priceHighestBid)} />
                   <Info label="Vị trí" value={detail.lead.location || "-"} />

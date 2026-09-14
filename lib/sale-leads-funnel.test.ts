@@ -5,6 +5,7 @@ import {
   calculateGapPercent,
   classifySaleLeadStage,
   filterSaleLeadRows,
+  getSaleLeadActionFlags,
   getOrderedSaleLeadFilterFacets,
   getGapBucket,
   getSaleLeadFilterCounts,
@@ -12,6 +13,7 @@ import {
   getQuoteTimestamps,
   getSaleLeadStageTone,
   extractSaleTextQuoteTimestamps,
+  extractSaleTextQuoteEvents,
   hasQuotedAfter,
   hasVehicleImagesFromSources,
   summarizeDealerBids,
@@ -29,6 +31,7 @@ function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassif
     inInspectionRegion: true,
     hasInspectionBooking: false,
     isInspected: false,
+    latestInspectionAt: null,
     highestBid: 420_000_000,
     preInspectionBidCount: 1,
     postInspectionBidCount: 0,
@@ -38,8 +41,9 @@ function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassif
     priceVucarOfferedAt: null,
     priceVucarOffered: null,
     agentPricingEvents: null,
-    saleCompletedCallTs: [],
-    saleTextQuoteTs: [],
+  saleCompletedCallTs: [],
+  saleTextQuoteTs: [],
+    saleTextQuotePrices: [],
     ...overrides,
   };
 }
@@ -109,6 +113,42 @@ describe("extractSaleTextQuoteTimestamps", () => {
       ]),
     ).toEqual(["2026-08-20T02:10:33.273Z"]);
   });
+
+  it("extracts post-inspection low-price customer offer messages", () => {
+    expect(
+      extractSaleTextQuoteTimestamps([
+        {
+          created_at: "2026-09-12T04:05:00.389Z",
+          content: "Dạ như hôm qua khách có báo là 100tr là họ thiện chí đi xem xe chị rồi.",
+        },
+      ]),
+    ).toEqual(["2026-09-12T04:05:00.389Z"]);
+  });
+
+  it("extracts post-inspection market price ranges without an explicit unit", () => {
+    expect(
+      extractSaleTextQuoteTimestamps([
+        {
+          created_at: "2026-08-30T08:14:07.712Z",
+          content: "xe mình dòng này trên thị trường đang bán khoảng từ 550-600 nè anh",
+        },
+      ]),
+    ).toEqual(["2026-08-30T08:14:07.712Z"]);
+  });
+});
+
+describe("extractSaleTextQuoteEvents", () => {
+  it("extracts quote prices in millions from outbound Zalo text", () => {
+    expect(
+      extractSaleTextQuoteEvents([
+        {
+          created_at: "2026-09-04T07:30:40.490Z",
+          content:
+            "chị oke về quy trình thì em làm việc thêm với khách mua về giá xem có dc giá tốt hơn ko, giá 550 hiện tại là giá tcao hơn mặt bằng chung của thị trường rồi, mặc dù nó là giá trước khi kiểm định xe",
+        },
+      ]),
+    ).toEqual([{ at: "2026-09-04T07:30:40.490Z", price: 550_000_000 }]);
+  });
 });
 
 describe("hasQuotedAfter", () => {
@@ -145,24 +185,51 @@ describe("classifySaleLeadStage", () => {
     expect(classifySaleLeadStage(lead())).toBe("need_quote");
   });
 
-  it("asks sales to book inspection after a pre-inspection quote in an inspection region", () => {
+  it("does not ask for another quote when an older sale text quote is still above the latest bid", () => {
     expect(
       classifySaleLeadStage(
         lead({
-          quoteTs: ["2026-09-01T04:00:00.000Z"],
+          highestBid: 520_000_000,
+          latestPreInspectionBidAt: "2026-09-07T10:48:23.741Z",
+          saleTextQuoteTs: ["2026-09-04T07:30:40.490Z"],
+          saleTextQuotePrices: [550_000_000],
         }),
       ),
-    ).toBe("need_inspection_booking");
+    ).toBe("follow_up_after_quote");
   });
 
-  it("asks sales to book inspection after a successful sale call quote", () => {
+  it("asks for another quote when the latest bid beats the older quoted price", () => {
+    expect(
+      classifySaleLeadStage(
+        lead({
+          highestBid: 520_000_000,
+          latestPreInspectionBidAt: "2026-09-07T10:48:23.741Z",
+          saleTextQuoteTs: ["2026-09-04T07:30:40.490Z"],
+          saleTextQuotePrices: [500_000_000],
+        }),
+      ),
+    ).toBe("need_quote");
+  });
+
+  it("keeps quoted inspection-region leads in follow-up while flagging inspection booking as status", () => {
+    const input = lead({
+      quoteTs: ["2026-09-01T04:00:00.000Z"],
+    });
+
+    expect(classifySaleLeadStage(input)).toBe("follow_up_after_quote");
+    expect(
+      getSaleLeadActionFlags(input),
+    ).toMatchObject({ needsInspectionBooking: true, needsPostInspectionQuote: false });
+  });
+
+  it("keeps sale-call quoted leads in follow-up while flagging inspection booking as status", () => {
     expect(
       classifySaleLeadStage(
         lead({
           saleCompletedCallTs: ["2026-09-01T04:00:00.000Z"],
         }),
       ),
-    ).toBe("need_inspection_booking");
+    ).toBe("follow_up_after_quote");
   });
 
   it("moves leads quoted through outbound Zalo text past the need-quote stage", () => {
@@ -173,21 +240,115 @@ describe("classifySaleLeadStage", () => {
           saleTextQuoteTs: ["2026-08-20T02:10:33.273Z"],
         }),
       ),
-    ).toBe("need_inspection_booking");
+    ).toBe("follow_up_after_quote");
   });
 
-  it("asks sales to quote again after a post-inspection bid", () => {
+  it("keeps post-inspection leads in follow-up while flagging post-inspection quote as status", () => {
+    const input = lead({
+      isInspected: true,
+      latestInspectionAt: "2026-09-02T02:00:00.000Z",
+      hasInspectionBooking: true,
+      postInspectionBidCount: 1,
+      latestPostInspectionBidAt: "2026-09-02T03:00:00.000Z",
+      quoteTs: ["2026-09-01T04:00:00.000Z"],
+    });
+
+    expect(classifySaleLeadStage(input)).toBe("follow_up_after_quote");
     expect(
-      classifySaleLeadStage(
-        lead({
-          isInspected: true,
-          hasInspectionBooking: true,
-          postInspectionBidCount: 1,
-          latestPostInspectionBidAt: "2026-09-02T03:00:00.000Z",
-          quoteTs: ["2026-09-01T04:00:00.000Z"],
-        }),
-      ),
-    ).toBe("need_post_inspection_quote");
+      getSaleLeadActionFlags(input),
+    ).toMatchObject({ needsInspectionBooking: false, needsPostInspectionQuote: true });
+  });
+
+  it("flags inspected leads for post-inspection quote even before a post-inspection dealer bid exists", () => {
+    const input = lead({
+      isInspected: true,
+      latestInspectionAt: "2026-09-08T05:02:58.418Z",
+      hasInspectionBooking: true,
+      postInspectionBidCount: 0,
+      latestPostInspectionBidAt: null,
+      quoteTs: ["2026-09-08T03:08:49.792Z"],
+    });
+
+    expect(
+      getSaleLeadActionFlags(input),
+    ).toMatchObject({ needsInspectionBooking: false, needsPostInspectionQuote: true });
+  });
+
+  it("does not flag inspected leads after a quote sent after inspection", () => {
+    const input = lead({
+      isInspected: true,
+      latestInspectionAt: "2026-09-08T05:02:58.418Z",
+      hasInspectionBooking: true,
+      postInspectionBidCount: 0,
+      latestPostInspectionBidAt: null,
+      quoteTs: ["2026-09-08T06:08:49.792Z"],
+    });
+
+    expect(
+      getSaleLeadActionFlags(input),
+    ).toMatchObject({ needsInspectionBooking: false, needsPostInspectionQuote: false });
+  });
+
+  it("uses a later post-inspection dealer bid as the post-inspection quote anchor", () => {
+    const input = lead({
+      isInspected: true,
+      latestInspectionAt: "2026-09-08T05:02:58.418Z",
+      hasInspectionBooking: true,
+      postInspectionBidCount: 1,
+      latestPostInspectionBidAt: "2026-09-08T07:00:00.000Z",
+      quoteTs: ["2026-09-08T06:08:49.792Z"],
+    });
+
+    expect(
+      getSaleLeadActionFlags(input),
+    ).toMatchObject({ needsInspectionBooking: false, needsPostInspectionQuote: true });
+  });
+
+  it("does not treat a post-inspection sale call as a post-inspection text quote", () => {
+    const input = lead({
+      isInspected: true,
+      latestInspectionAt: "2026-09-08T05:02:58.418Z",
+      hasInspectionBooking: true,
+      saleCompletedCallTs: ["2026-09-08T14:13:40.106Z"],
+      quoteTs: [],
+      saleTextQuoteTs: [],
+    });
+
+    expect(
+      getSaleLeadActionFlags(input),
+    ).toMatchObject({ needsInspectionBooking: false, needsPostInspectionQuote: true });
+  });
+
+  it("still flags failed or delayed inspected leads when they lack a post-inspection quote", () => {
+    const base = {
+      isInspected: true,
+      latestInspectionAt: "2026-09-11T04:57:46.978Z",
+      hasInspectionBooking: true,
+      postInspectionBidCount: 0,
+      latestPostInspectionBidAt: null,
+      quoteTs: ["2026-09-10T05:04:50.093Z"],
+    } satisfies Partial<SaleLeadClassifierInput>;
+
+    expect(
+      getSaleLeadActionFlags(lead({ ...base, crmStage: "FAILED" })),
+    ).toMatchObject({ needsPostInspectionQuote: true });
+    expect(
+      getSaleLeadActionFlags(lead({ ...base, intention: "DELAY" })),
+    ).toMatchObject({ needsPostInspectionQuote: true });
+  });
+
+  it("does not flag successful paid leads for post-inspection quote follow-up", () => {
+    const input = lead({
+      crmStage: "COMPLETED",
+      firstPaymentDate: "2026-09-11T04:57:46.978Z",
+      isInspected: true,
+      latestInspectionAt: "2026-09-11T04:57:46.978Z",
+      quoteTs: [],
+    });
+
+    expect(
+      getSaleLeadActionFlags(input),
+    ).toMatchObject({ needsPostInspectionQuote: false });
   });
 
   it("moves quoted active leads to follow-up after quote", () => {
@@ -281,8 +442,6 @@ describe("sale lead stage config", () => {
       "need_images",
       "need_price_source",
       "need_quote",
-      "need_inspection_booking",
-      "need_post_inspection_quote",
       "follow_up_after_quote",
       "delayed",
       "failed",
@@ -351,13 +510,13 @@ describe("calculateGapPercent", () => {
 
 describe("sale lead list filters", () => {
   const rows = [
-    { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: false, hotLead: false },
-    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false },
-    { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: true, hotLead: true },
-    { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false, hotLead: true },
-    { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: true, hotLead: false },
-    { workStage: "success", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false, hotLead: false },
-    { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false },
+    { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: true, needsPostInspectionQuote: false },
+    { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: true, hotLead: true, needsInspectionBooking: false, needsPostInspectionQuote: true },
+    { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false, hotLead: true, needsInspectionBooking: false, needsPostInspectionQuote: false },
+    { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: true, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+    { workStage: "success", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+    { workStage: "delayed", gapBucket: "no_price", hasImages: false, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
   ] as SaleLeadFilterableRow[];
 
   it("filters leads by images and inspection status in addition to stage and gap", () => {
@@ -375,6 +534,8 @@ describe("sale lead list filters", () => {
     expect(filterSaleLeadRows(rows, { noHumanTouch: true })).toEqual([rows[0], rows[4]]);
     expect(filterSaleLeadRows(rows, { underTwoBids: true })).toEqual([rows[2], rows[4]]);
     expect(filterSaleLeadRows(rows, { hotLead: true })).toEqual([rows[2], rows[3]]);
+    expect(filterSaleLeadRows(rows, { needsInspectionBooking: true })).toEqual([rows[1]]);
+    expect(filterSaleLeadRows(rows, { needsPostInspectionQuote: true })).toEqual([rows[2]]);
   });
 
   it("counts filter buttons from the full unfiltered row set", () => {
@@ -388,8 +549,6 @@ describe("sale lead list filters", () => {
         need_images: 1,
         need_price_source: 0,
         need_quote: 1,
-        need_inspection_booking: 0,
-        need_post_inspection_quote: 0,
         follow_up_after_quote: 1,
         no_zalo: 0,
       },
@@ -405,6 +564,8 @@ describe("sale lead list filters", () => {
       noHumanTouch: 2,
       underTwoBids: 2,
       hotLead: 2,
+      needsInspectionBooking: 1,
+      needsPostInspectionQuote: 1,
     });
   });
 
@@ -416,8 +577,6 @@ describe("sale lead list filters", () => {
         need_images: 1,
         need_price_source: 0,
         need_quote: 1,
-        need_inspection_booking: 0,
-        need_post_inspection_quote: 0,
         follow_up_after_quote: 1,
         delayed: 0,
         failed: 0,
@@ -437,6 +596,8 @@ describe("sale lead list filters", () => {
         noHumanTouch: 2,
         underTwoBids: 2,
         hotLead: 2,
+        needsInspectionBooking: 1,
+        needsPostInspectionQuote: 1,
       },
     });
   });
@@ -449,8 +610,6 @@ describe("sale lead list filters", () => {
         need_images: 1,
         need_price_source: 0,
         need_quote: 1,
-        need_inspection_booking: 0,
-        need_post_inspection_quote: 0,
         follow_up_after_quote: 1,
         delayed: 1,
         failed: 1,
@@ -470,6 +629,8 @@ describe("sale lead list filters", () => {
         noHumanTouch: 2,
         underTwoBids: 2,
         hotLead: 2,
+        needsInspectionBooking: 1,
+        needsPostInspectionQuote: 1,
       },
     });
 

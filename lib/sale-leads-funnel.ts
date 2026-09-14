@@ -21,6 +21,8 @@ export interface SaleLeadFilterableRow {
   noHumanTouch: boolean;
   underTwoBids: boolean;
   hotLead: boolean;
+  needsInspectionBooking: boolean;
+  needsPostInspectionQuote: boolean;
 }
 
 export interface SaleLeadListFilters {
@@ -32,6 +34,8 @@ export interface SaleLeadListFilters {
   noHumanTouch?: boolean;
   underTwoBids?: boolean;
   hotLead?: boolean;
+  needsInspectionBooking?: boolean;
+  needsPostInspectionQuote?: boolean;
 }
 
 export interface SaleLeadFilterCounts {
@@ -44,6 +48,8 @@ export interface SaleLeadFilterCounts {
   noImages: number;
   underTwoBids: number;
   hotLead: number;
+  needsInspectionBooking: number;
+  needsPostInspectionQuote: number;
 }
 
 export interface SaleLeadFilterFacets {
@@ -57,6 +63,8 @@ export interface SaleLeadFilterFacets {
     noHumanTouch: number;
     underTwoBids: number;
     hotLead: number;
+    needsInspectionBooking: number;
+    needsPostInspectionQuote: number;
   };
   groupTotals?: {
     status: number;
@@ -66,7 +74,15 @@ export interface SaleLeadFilterFacets {
 }
 
 export type SaleLeadFilterGroup = "status" | "stage" | "gap";
-export type SaleLeadStatusFilterKey = "hasImages" | "noImages" | "inspected" | "noHumanTouch" | "underTwoBids" | "hotLead";
+export type SaleLeadStatusFilterKey =
+  | "hasImages"
+  | "noImages"
+  | "inspected"
+  | "noHumanTouch"
+  | "underTwoBids"
+  | "hotLead"
+  | "needsInspectionBooking"
+  | "needsPostInspectionQuote";
 
 export interface AgentPricingEvent {
   type?: string | null;
@@ -89,6 +105,7 @@ export interface SaleLeadClassifierInput {
   inInspectionRegion: boolean;
   hasInspectionBooking: boolean;
   isInspected: boolean;
+  latestInspectionAt?: string | null;
   highestBid?: number | null;
   preInspectionBidCount: number;
   postInspectionBidCount: number;
@@ -100,6 +117,7 @@ export interface SaleLeadClassifierInput {
   agentPricingEvents?: AgentPricingEvents | null;
   saleCompletedCallTs?: string[] | null;
   saleTextQuoteTs?: string[] | null;
+  saleTextQuotePrices?: number[] | null;
 }
 
 export interface SaleLeadVehicleImageSources {
@@ -117,6 +135,11 @@ export interface DealerBidLike {
   dealer_name?: string | null;
   dealerName?: string | null;
   is_interested?: boolean | null;
+}
+
+export interface SaleTextQuoteEvent {
+  at: string;
+  price: number | null;
 }
 
 export interface SaleLeadStageConfig {
@@ -154,18 +177,6 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
     label: "Cần trả giá",
     shortLabel: "Trả giá",
     description: "Đã có bid trước kiểm định nhưng chưa báo giá cho khách sau bid đó.",
-  },
-  {
-    key: "need_inspection_booking",
-    label: "Cần đặt lịch kiểm định",
-    shortLabel: "Đặt KĐ",
-    description: "Đã báo giá, xe trong vùng kiểm định nhưng chưa có lịch.",
-  },
-  {
-    key: "need_post_inspection_quote",
-    label: "Cần trả giá sau kiểm định",
-    shortLabel: "Giá sau KĐ",
-    description: "Đã kiểm định và có bid sau kiểm định nhưng chưa báo giá sau bid đó.",
   },
   {
     key: "follow_up_after_quote",
@@ -258,6 +269,15 @@ function parseTimestamp(value: string | null | undefined): number | null {
   return Number.isFinite(time) ? time : null;
 }
 
+function latestTimestampValue(...values: Array<string | null | undefined>) {
+  return values.reduce<string | null>((latest, value) => {
+    const time = parseTimestamp(value);
+    if (time === null) return latest;
+    const latestTime = parseTimestamp(latest);
+    return latestTime === null || time > latestTime ? String(value) : latest;
+  }, null);
+}
+
 function addTimestamp(timestamps: string[], seen: Set<string>, value: string | null | undefined) {
   if (!value || seen.has(value) || parseTimestamp(value) === null) return;
   seen.add(value);
@@ -274,29 +294,73 @@ function normalizeSearchText(value: string) {
 }
 
 const OUTBOUND_QUOTE_CONTEXT_RE =
-  /(gia|khung gia|muc gia|tra quanh|dang tra|ben mua|khach mua|mua duoc|giao dich|ket noi khach|ban duoc gia|duoc gia|can doi khoang|khoang nay|tam)/;
+  /(gia|khung gia|muc gia|tra quanh|dang tra|dang ban|ben mua|khach mua|khach co bao|co bao la|mua duoc|giao dich|ket noi khach|ban duoc gia|duoc gia|can doi khoang|khoang nay|tam)/;
 const ABSOLUTE_CAR_PRICE_RE =
-  /\b\d+\s*(?:ty|ti|t)\s*\d{0,3}\s*(?:tr|trieu)?\b|\b[5-9]\d{2,3}\s*(?:tr|trieu)\b/;
+  /\b\d+\s*(?:ty|ti|t)\s*\d{0,3}\s*(?:tr|trieu)?\b|\b\d{2,4}\s*(?:tr|trieu)\b|\b\d{2,4}\s*[-–]\s*\d{2,4}\b/;
+const IMPLIED_MILLION_PRICE_RE =
+  /\b(?:gia|muc gia|khung gia|muc)\s+(\d{2,4})\b|\b(\d{2,4})\s+hien tai\b/;
+const IMPLIED_MILLION_PRICE_GLOBAL_RE =
+  /\b(?:gia|muc gia|khung gia|muc)\s+(\d{2,4})\b|\b(\d{2,4})\s+hien tai\b/g;
 
 export function isSaleTextQuote(content: string | null | undefined) {
   if (!content) return false;
   const text = normalizeSearchText(content);
-  return OUTBOUND_QUOTE_CONTEXT_RE.test(text) && ABSOLUTE_CAR_PRICE_RE.test(text);
+  return OUTBOUND_QUOTE_CONTEXT_RE.test(text) && (ABSOLUTE_CAR_PRICE_RE.test(text) || IMPLIED_MILLION_PRICE_RE.test(text));
+}
+
+function tyTailToMillions(tail: string) {
+  if (!tail) return 0;
+  return Number(tail.padEnd(3, "0").slice(0, 3));
+}
+
+function extractQuotePrices(content: string | null | undefined) {
+  if (!content) return [];
+  const text = normalizeSearchText(content);
+  const prices = new Set<number>();
+
+  for (const match of text.matchAll(/\b(\d+)\s*(?:ty|ti|t)\s*(\d{0,3})\s*(?:tr|trieu)?\b/g)) {
+    prices.add((Number(match[1]) * 1_000 + tyTailToMillions(match[2] ?? "")) * 1_000_000);
+  }
+
+  for (const match of text.matchAll(/\b(\d{2,4})\s*[-–]\s*(\d{2,4})\s*(?:tr|trieu)?\b/g)) {
+    prices.add(Math.max(Number(match[1]), Number(match[2])) * 1_000_000);
+  }
+
+  for (const match of text.matchAll(/\b(\d{2,4})\s*(?:tr|trieu)\b/g)) {
+    prices.add(Number(match[1]) * 1_000_000);
+  }
+
+  for (const match of text.matchAll(IMPLIED_MILLION_PRICE_GLOBAL_RE)) {
+    const value = Number(match[1] ?? match[2]);
+    if (Number.isFinite(value)) prices.add(value * 1_000_000);
+  }
+
+  return Array.from(prices).filter((price) => price > 1_000_000).sort((a, b) => a - b);
+}
+
+export function extractSaleTextQuoteEvents(
+  messages: Array<{ created_at?: string | Date | null; content?: string | null }> | null | undefined,
+) {
+  const events: SaleTextQuoteEvent[] = [];
+  const seen = new Set<string>();
+
+  for (const message of messages ?? []) {
+    if (!isSaleTextQuote(message.content)) continue;
+    const rawTimestamp = message.created_at;
+    const timestamp = rawTimestamp instanceof Date ? rawTimestamp.toISOString() : rawTimestamp ? String(rawTimestamp) : null;
+    if (!timestamp || parseTimestamp(timestamp) === null || seen.has(timestamp)) continue;
+    seen.add(timestamp);
+    const prices = extractQuotePrices(message.content);
+    events.push({ at: timestamp, price: prices.length > 0 ? Math.max(...prices) : null });
+  }
+
+  return events.sort((a, b) => (parseTimestamp(a.at) ?? 0) - (parseTimestamp(b.at) ?? 0));
 }
 
 export function extractSaleTextQuoteTimestamps(
   messages: Array<{ created_at?: string | Date | null; content?: string | null }> | null | undefined,
 ) {
-  const timestamps: string[] = [];
-  const seen = new Set<string>();
-
-  for (const message of messages ?? []) {
-    const rawTimestamp = message.created_at;
-    const timestamp = rawTimestamp instanceof Date ? rawTimestamp.toISOString() : rawTimestamp ? String(rawTimestamp) : null;
-    if (isSaleTextQuote(message.content)) addTimestamp(timestamps, seen, timestamp);
-  }
-
-  return timestamps.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
+  return extractSaleTextQuoteEvents(messages).map((event) => event.at);
 }
 
 export function getQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
@@ -328,12 +392,47 @@ export function getQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
   return timestamps.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
 }
 
+export function getTextQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
+  const timestamps: string[] = [];
+  const seen = new Set<string>();
+
+  for (const ts of input.quoteTs ?? []) {
+    addTimestamp(timestamps, seen, ts);
+  }
+
+  for (const ts of input.saleTextQuoteTs ?? []) {
+    addTimestamp(timestamps, seen, ts);
+  }
+
+  addTimestamp(timestamps, seen, input.priceVucarOfferedAt);
+  addTimestamp(timestamps, seen, input.agentPricingEvents?.vo_at ?? null);
+
+  for (const event of input.agentPricingEvents?.events ?? []) {
+    const type = String(event.type ?? "").toUpperCase();
+    if (OFFER_EVENT_TYPES.has(type)) {
+      addTimestamp(timestamps, seen, event.at ?? null);
+    }
+  }
+
+  return timestamps.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
+}
+
 export function hasQuoted(input: SaleLeadClassifierInput): boolean {
   return (
     getQuoteTimestamps(input).length > 0 ||
     (input.priceVucarOffered !== null && input.priceVucarOffered !== undefined) ||
     input.agentPricingEvents?.vo_fired === true
   );
+}
+
+function hasQuotedAtOrAboveCurrentBid(input: SaleLeadClassifierInput) {
+  const currentBid = Number(input.highestBid ?? 0);
+  if (!Number.isFinite(currentBid) || currentBid <= 1_000_000) return false;
+  const quotedPrices = [
+    ...((input.saleTextQuotePrices ?? []).map((price) => Number(price))),
+    Number(input.priceVucarOffered ?? 0),
+  ].filter((price) => Number.isFinite(price) && price > 1_000_000);
+  return quotedPrices.some((price) => price >= currentBid);
 }
 
 function latestAt(items: Array<{ created_at: string | null }>) {
@@ -390,6 +489,52 @@ export function hasQuotedAfter(quoteTimestamps: string[], anchorTimestamp: strin
   });
 }
 
+function isInactiveForActionFlags(input: SaleLeadClassifierInput) {
+  const crmStage = String(input.crmStage ?? "").toUpperCase();
+  const intention = String(input.intention ?? "").toUpperCase();
+  return (
+    (SUCCESS_CRM_STAGES.has(crmStage) && Boolean(input.firstPaymentDate)) ||
+    crmStage === "FAILED" ||
+    TERMINAL_CRM_STAGES.has(crmStage) ||
+    intention === "DELAY"
+  );
+}
+
+function isSuccessfulPaidLead(input: SaleLeadClassifierInput) {
+  const crmStage = String(input.crmStage ?? "").toUpperCase();
+  return SUCCESS_CRM_STAGES.has(crmStage) && Boolean(input.firstPaymentDate);
+}
+
+export function getSaleLeadActionFlags(input: SaleLeadClassifierInput) {
+  const inactive = isInactiveForActionFlags(input);
+  if (isSuccessfulPaidLead(input)) {
+    return {
+      needsInspectionBooking: false,
+      needsPostInspectionQuote: false,
+    };
+  }
+
+  const quoteTimestamps = getTextQuoteTimestamps(input);
+  const postInspectionQuoteAnchor = latestTimestampValue(input.latestInspectionAt, input.latestPostInspectionBidAt);
+
+  return {
+    needsInspectionBooking:
+      !inactive &&
+      input.hasZaloChat &&
+      input.customerMessageCount > 0 &&
+      input.hasEnoughImages &&
+      input.inInspectionRegion &&
+      !input.hasInspectionBooking &&
+      !input.isInspected,
+    needsPostInspectionQuote:
+      input.hasZaloChat &&
+      input.customerMessageCount > 0 &&
+      input.hasEnoughImages &&
+      input.isInspected &&
+      !hasQuotedAfter(quoteTimestamps, postInspectionQuoteAnchor),
+  };
+}
+
 export function classifySaleLeadStage(input: SaleLeadClassifierInput): SaleLeadWorkStage | null {
   const crmStage = String(input.crmStage ?? "").toUpperCase();
   const intention = String(input.intention ?? "").toUpperCase();
@@ -406,19 +551,9 @@ export function classifySaleLeadStage(input: SaleLeadClassifierInput): SaleLeadW
   const hasAnyQuote = hasQuoted(input);
   const hasUsableBid = Number(input.highestBid ?? 0) > 1_000_000;
 
-  if (input.isInspected && input.postInspectionBidCount > 0) {
-    return hasQuotedAfter(quoteTimestamps, input.latestPostInspectionBidAt)
-      ? "follow_up_after_quote"
-      : "need_post_inspection_quote";
-  }
-
   if (!hasUsableBid || input.preInspectionBidCount <= 0) return "need_price_source";
 
-  if (!hasQuotedAfter(quoteTimestamps, input.latestPreInspectionBidAt)) return "need_quote";
-
-  if (input.inInspectionRegion && !input.hasInspectionBooking && !input.isInspected) {
-    return "need_inspection_booking";
-  }
+  if (!hasQuotedAfter(quoteTimestamps, input.latestPreInspectionBidAt) && !hasQuotedAtOrAboveCurrentBid(input)) return "need_quote";
 
   return hasAnyQuote ? "follow_up_after_quote" : "need_quote";
 }
@@ -449,7 +584,22 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
     const humanTouchOk = filters.noHumanTouch === undefined || row.noHumanTouch === filters.noHumanTouch;
     const underTwoBidsOk = filters.underTwoBids === undefined || row.underTwoBids === filters.underTwoBids;
     const hotLeadOk = filters.hotLead === undefined || row.hotLead === filters.hotLead;
-    return stageOk && gapOk && imageOk && noImageOk && inspectedOk && humanTouchOk && underTwoBidsOk && hotLeadOk;
+    const inspectionBookingOk =
+      filters.needsInspectionBooking === undefined || row.needsInspectionBooking === filters.needsInspectionBooking;
+    const postInspectionQuoteOk =
+      filters.needsPostInspectionQuote === undefined || row.needsPostInspectionQuote === filters.needsPostInspectionQuote;
+    return (
+      stageOk &&
+      gapOk &&
+      imageOk &&
+      noImageOk &&
+      inspectedOk &&
+      humanTouchOk &&
+      underTwoBidsOk &&
+      hotLeadOk &&
+      inspectionBookingOk &&
+      postInspectionQuoteOk
+    );
   });
 }
 
@@ -462,6 +612,8 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
   let noHumanTouch = 0;
   let underTwoBids = 0;
   let hotLead = 0;
+  let needsInspectionBooking = 0;
+  let needsPostInspectionQuote = 0;
   for (const row of rows) {
     stages[row.workStage] = (stages[row.workStage] ?? 0) + 1;
     gaps[row.gapBucket] = (gaps[row.gapBucket] ?? 0) + 1;
@@ -470,6 +622,8 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     if (row.noHumanTouch) noHumanTouch += 1;
     if (row.underTwoBids) underTwoBids += 1;
     if (row.hotLead) hotLead += 1;
+    if (row.needsInspectionBooking) needsInspectionBooking += 1;
+    if (row.needsPostInspectionQuote) needsPostInspectionQuote += 1;
   }
 
   return {
@@ -482,6 +636,8 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     noHumanTouch,
     underTwoBids,
     hotLead,
+    needsInspectionBooking,
+    needsPostInspectionQuote,
   };
 }
 
@@ -493,6 +649,8 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
     noHumanTouch: filters.noHumanTouch,
     underTwoBids: filters.underTwoBids,
     hotLead: filters.hotLead,
+    needsInspectionBooking: filters.needsInspectionBooking,
+    needsPostInspectionQuote: filters.needsPostInspectionQuote,
   });
   const statusScopedCounts = getSaleLeadFilterCounts(statusFilteredRows);
   const allCounts = getSaleLeadFilterCounts(rows);
@@ -508,6 +666,8 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
       noHumanTouch: allCounts.noHumanTouch,
       underTwoBids: allCounts.underTwoBids,
       hotLead: allCounts.hotLead,
+      needsInspectionBooking: allCounts.needsInspectionBooking,
+      needsPostInspectionQuote: allCounts.needsPostInspectionQuote,
     },
     groupTotals: {
       status: rows.length,
@@ -524,6 +684,8 @@ const STATUS_FILTER_KEYS: SaleLeadStatusFilterKey[] = [
   "noHumanTouch",
   "underTwoBids",
   "hotLead",
+  "needsInspectionBooking",
+  "needsPostInspectionQuote",
 ];
 
 const STAGE_KEYS = SALE_LEAD_STAGE_CONFIG.map((stage) => stage.key);
@@ -635,6 +797,8 @@ export function getOrderedSaleLeadFilterFacets(
       noHumanTouch: statusCounts.noHumanTouch,
       underTwoBids: statusCounts.underTwoBids,
       hotLead: statusCounts.hotLead,
+      needsInspectionBooking: statusCounts.needsInspectionBooking,
+      needsPostInspectionQuote: statusCounts.needsPostInspectionQuote,
     },
     groupTotals: {
       status: statusRows.length,

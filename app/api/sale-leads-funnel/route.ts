@@ -7,9 +7,10 @@ import {
   calculateGapPercent,
   classifySaleLeadStage,
   countStoredVehicleImages,
-  extractSaleTextQuoteTimestamps,
+  extractSaleTextQuoteEvents,
   filterSaleLeadRows,
   formatMillionShort,
+  getSaleLeadActionFlags,
   getSaleLeadFilterCounts,
   getSaleLeadFilterFacets,
   getOrderedSaleLeadFilterFacets,
@@ -152,6 +153,8 @@ export async function GET(request: Request) {
     const noHumanTouchFilter = parseBooleanFilter(searchParams.get("noHumanTouch"));
     const underTwoBidsFilter = parseBooleanFilter(searchParams.get("underTwoBids"));
     const hotLeadFilter = parseBooleanFilter(searchParams.get("hotLead"));
+    const needsInspectionBookingFilter = parseBooleanFilter(searchParams.get("needsInspectionBooking"));
+    const needsPostInspectionQuoteFilter = parseBooleanFilter(searchParams.get("needsPostInspectionQuote"));
     const filterOrder = parseCsv(searchParams.get("filterOrder"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
 
@@ -267,7 +270,11 @@ export async function GET(request: Request) {
                    AND m.content IS NOT NULL
                    AND BTRIM(m.content) NOT LIKE '{%'
                    AND m.content ~* '[0-9]'
-                   AND m.content ~* '(tỷ|ty|tỉ|ti|tr|triệu|trieu)'
+                   AND (
+                     m.content ~* '(tỷ|ty|tỉ|ti|tr|triệu|trieu)'
+                     OR m.content ~* '[0-9]{2,4}\s*[-–]\s*[0-9]{2,4}'
+                     OR m.content ~* '(giá|gia|mức|muc|khung giá|khung gia)\s+[0-9]{2,4}'
+                   )
                    AND m.content ~* '(giá|gia|trả|tra|mua|khách|khach|khoảng|khoang|tầm|tam|giao dịch|giao dich)'
                ) AS sale_text_quote_messages
              FROM leads_relation lr
@@ -363,6 +370,7 @@ export async function GET(request: Request) {
         const noHumanTouch = relationCount > 0 && humanMessageCount <= 0;
         const underTwoBids = hasCustomerAndDealerPrice && dealerBidDealerCount > 0 && dealerBidDealerCount < 2;
         const hotLead = row.is_hot_lead === true;
+        const saleTextQuoteEvents = extractSaleTextQuoteEvents(zalo?.sale_text_quote_messages);
         const gapPercent = calculateGapPercent(priceCustomer, fallbackHighestBid);
         const storedImageCount = countStoredVehicleImages(row.additional_images);
         const summaryHadImage = latest?.had_car_image === true || latest?.had_image === true;
@@ -381,6 +389,9 @@ export async function GET(request: Request) {
           inInspectionRegion: isInInspectionRegion(row.location ?? latest?.location),
           hasInspectionBooking: booked,
           isInspected: inspected,
+          latestInspectionAt: inspectionByCar.get(row.car_id)?.inspected_at
+            ? String(inspectionByCar.get(row.car_id)?.inspected_at)
+            : null,
           highestBid: fallbackHighestBid,
           preInspectionBidCount: bid.preInspectionBidCount,
           postInspectionBidCount: bid.postInspectionBidCount,
@@ -391,10 +402,14 @@ export async function GET(request: Request) {
           priceVucarOffered: numberOrNull(latest?.price_vucar_offered),
           agentPricingEvents: extractAgentPricingEvents(signalByCar.get(row.car_id)),
           saleCompletedCallTs: normalizeTimestampArray(zalo?.sale_completed_call_ts),
-          saleTextQuoteTs: extractSaleTextQuoteTimestamps(zalo?.sale_text_quote_messages),
+          saleTextQuoteTs: saleTextQuoteEvents.map((event) => event.at),
+          saleTextQuotePrices: saleTextQuoteEvents
+            .map((event) => event.price)
+            .filter((price): price is number => price !== null),
         };
         const workStage = classifySaleLeadStage(classifierInput);
         if (!workStage) return null;
+        const actionFlags = getSaleLeadActionFlags(classifierInput);
         const quoteTimestamps = getQuoteTimestamps(classifierInput);
         const lastTouchAt = zalo?.last_message_at ? String(zalo.last_message_at) : null;
 
@@ -431,6 +446,8 @@ export async function GET(request: Request) {
           noHumanTouch,
           underTwoBids,
           hotLead,
+          needsInspectionBooking: actionFlags.needsInspectionBooking,
+          needsPostInspectionQuote: actionFlags.needsPostInspectionQuote,
           humanMessageCount,
           aiMessageCount,
           dealerBidDealerCount,
@@ -462,6 +479,8 @@ export async function GET(request: Request) {
       noHumanTouch: noHumanTouchFilter,
       underTwoBids: underTwoBidsFilter,
       hotLead: hotLeadFilter,
+      needsInspectionBooking: needsInspectionBookingFilter,
+      needsPostInspectionQuote: needsPostInspectionQuoteFilter,
     };
     const facets =
       filterOrder.length > 0
@@ -496,6 +515,8 @@ export async function GET(request: Request) {
         noHumanTouch: noHumanTouchFilter,
         underTwoBids: underTwoBidsFilter,
         hotLead: hotLeadFilter,
+        needsInspectionBooking: needsInspectionBookingFilter,
+        needsPostInspectionQuote: needsPostInspectionQuoteFilter,
         filterOrder,
         sort,
         page,
