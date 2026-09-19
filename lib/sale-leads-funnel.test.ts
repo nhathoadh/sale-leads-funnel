@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   SALE_LEAD_STAGE_CONFIG,
+  buildSaleLeadStageSummary,
+  buildSaleLeadWorkableGapSummary,
   calculateGapPercent,
   classifySaleLeadStage,
   filterSaleLeadRows,
@@ -12,14 +14,26 @@ import {
   getSaleLeadFilterFacets,
   getQuoteTimestamps,
   getSaleLeadStageTone,
+  normalizeSaleLeadTeamFilter,
   extractSaleTextQuoteTimestamps,
   extractSaleTextQuoteEvents,
   hasQuotedAfter,
   hasVehicleImagesFromSources,
+  resolveSaleLeadHighestBid,
   summarizeDealerBids,
   type SaleLeadClassifierInput,
   type SaleLeadFilterableRow,
 } from "@/lib/sale-leads-funnel";
+
+describe("sale lead team filters", () => {
+  it("defaults to Hanoi and accepts Hanoi or HCM team names", () => {
+    expect(normalizeSaleLeadTeamFilter(null)).toBe("HANOI");
+    expect(normalizeSaleLeadTeamFilter("")).toBe("HANOI");
+    expect(normalizeSaleLeadTeamFilter("unknown")).toBe("HANOI");
+    expect(normalizeSaleLeadTeamFilter("hanoi")).toBe("HANOI");
+    expect(normalizeSaleLeadTeamFilter("HCM")).toBe("HCM");
+  });
+});
 
 function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassifierInput {
   return {
@@ -135,6 +149,17 @@ describe("extractSaleTextQuoteTimestamps", () => {
       ]),
     ).toEqual(["2026-08-30T08:14:07.712Z"]);
   });
+
+  it("extracts buyer-price offers that use an implied million amount after 'tầm'", () => {
+    expect(
+      extractSaleTextQuoteTimestamps([
+        {
+          created_at: "2026-09-15T06:20:31.403Z",
+          content: "Dạ e đang kết nối được khách mua tầm 300 ạ",
+        },
+      ]),
+    ).toEqual(["2026-09-15T06:20:31.403Z"]);
+  });
 });
 
 describe("extractSaleTextQuoteEvents", () => {
@@ -148,6 +173,17 @@ describe("extractSaleTextQuoteEvents", () => {
         },
       ]),
     ).toEqual([{ at: "2026-09-04T07:30:40.490Z", price: 550_000_000 }]);
+  });
+
+  it("extracts implied million buyer-price offers after 'tầm'", () => {
+    expect(
+      extractSaleTextQuoteEvents([
+        {
+          created_at: "2026-09-15T06:20:31.403Z",
+          content: "Dạ e đang kết nối được khách mua tầm 300 ạ",
+        },
+      ]),
+    ).toEqual([{ at: "2026-09-15T06:20:31.403Z", price: 300_000_000 }]);
   });
 });
 
@@ -257,6 +293,24 @@ describe("classifySaleLeadStage", () => {
     expect(
       getSaleLeadActionFlags(input),
     ).toMatchObject({ needsInspectionBooking: false, needsPostInspectionQuote: true });
+  });
+
+  it("does not send post-inspection-only bid leads back to price sourcing", () => {
+    expect(
+      classifySaleLeadStage(
+        lead({
+          isInspected: true,
+          latestInspectionAt: "2026-09-06T13:22:50.972Z",
+          hasInspectionBooking: true,
+          highestBid: 400_000_000,
+          preInspectionBidCount: 0,
+          postInspectionBidCount: 3,
+          latestPreInspectionBidAt: null,
+          latestPostInspectionBidAt: "2026-09-16T13:25:20.427Z",
+          quoteTs: ["2026-09-10T07:35:06.204Z"],
+        }),
+      ),
+    ).toBe("follow_up_after_quote");
   });
 
   it("flags inspected leads for post-inspection quote even before a post-inspection dealer bid exists", () => {
@@ -464,7 +518,71 @@ describe("sale lead stage config", () => {
   });
 });
 
+describe("buildSaleLeadStageSummary", () => {
+  it("summarizes every stage while only treating price, quote, and follow-up image leads as workable", () => {
+    const counts = {
+      total: 22,
+      stages: {
+        need_contact: 2,
+        need_images: 3,
+        need_price_source: 5,
+        need_quote: 4,
+        follow_up_after_quote: 6,
+        delayed: 1,
+        failed: 1,
+        success: 0,
+        no_zalo: 0,
+      },
+    };
+
+    expect(buildSaleLeadStageSummary(counts)).toEqual({
+      total: 22,
+      workableTotal: 15,
+      stages: [
+        expect.objectContaining({ key: "need_contact", count: 2, workableCount: 0 }),
+        expect.objectContaining({ key: "need_images", count: 3, workableCount: 0 }),
+        expect.objectContaining({ key: "need_price_source", count: 5, workableCount: 5 }),
+        expect.objectContaining({ key: "need_quote", count: 4, workableCount: 4 }),
+        expect.objectContaining({ key: "follow_up_after_quote", count: 6, workableCount: 6 }),
+        expect.objectContaining({ key: "delayed", count: 1, workableCount: 0 }),
+        expect.objectContaining({ key: "failed", count: 1, workableCount: 0 }),
+        expect.objectContaining({ key: "success", count: 0, workableCount: 0 }),
+        expect.objectContaining({ key: "no_zalo", count: 0, workableCount: 0 }),
+      ],
+    });
+  });
+});
+
+describe("buildSaleLeadWorkableGapSummary", () => {
+  it("counts gap buckets only for image leads in price, quote, and follow-up stages", () => {
+    const rows: SaleLeadFilterableRow[] = [
+      { workStage: "need_price_source", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+      { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+      { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+      { workStage: "follow_up_after_quote", gapBucket: "gt10", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+      { workStage: "need_price_source", gapBucket: "lt5", hasImages: false, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+      { workStage: "failed", gapBucket: "gt10", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
+    ];
+
+    expect(buildSaleLeadWorkableGapSummary(rows)).toEqual({
+      total: 4,
+      buckets: [
+        { key: "lt5", label: "<5%", count: 1, percent: 25 },
+        { key: "5_10", label: "5-10%", count: 1, percent: 25 },
+        { key: "gt10", label: ">10%", count: 1, percent: 25 },
+        { key: "no_price", label: "Chưa có giá", count: 1, percent: 25 },
+      ],
+    });
+  });
+});
+
 describe("summarizeDealerBids", () => {
+  it("prefers the CRM highest bid before falling back to dealer bids", () => {
+    expect(resolveSaleLeadHighestBid(80_000_000, 100_000_000)).toBe(80_000_000);
+    expect(resolveSaleLeadHighestBid(null, 100_000_000)).toBe(100_000_000);
+    expect(resolveSaleLeadHighestBid(0, 100_000_000)).toBe(100_000_000);
+  });
+
   it("anchors a repeated highest pre-inspection bid at the first time that price appeared", () => {
     expect(
       summarizeDealerBids([

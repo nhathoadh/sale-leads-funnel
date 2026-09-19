@@ -12,6 +12,14 @@ export type SaleLeadWorkStage =
   | "follow_up_after_quote";
 
 export type SaleLeadGapBucket = "lt5" | "5_10" | "gt10" | "no_price";
+export type SaleLeadTeamFilter = "HANOI" | "HCM";
+
+export const DEFAULT_SALE_LEAD_TEAM_FILTER: SaleLeadTeamFilter = "HANOI";
+
+export function normalizeSaleLeadTeamFilter(value: string | null | undefined): SaleLeadTeamFilter {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  return normalized === "HCM" ? "HCM" : DEFAULT_SALE_LEAD_TEAM_FILTER;
+}
 
 export interface SaleLeadFilterableRow {
   workStage: SaleLeadWorkStage;
@@ -153,6 +161,29 @@ export interface SaleLeadStageTone {
   badgeClass: string;
 }
 
+export interface SaleLeadStageSummaryStage extends SaleLeadStageConfig {
+  count: number;
+  workableCount: number;
+}
+
+export interface SaleLeadStageSummary {
+  total: number;
+  workableTotal: number;
+  stages: SaleLeadStageSummaryStage[];
+}
+
+export interface SaleLeadWorkableGapSummaryBucket {
+  key: SaleLeadGapBucket;
+  label: string;
+  count: number;
+  percent: number;
+}
+
+export interface SaleLeadWorkableGapSummary {
+  total: number;
+  buckets: SaleLeadWorkableGapSummaryBucket[];
+}
+
 export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
   {
     key: "need_contact",
@@ -210,6 +241,18 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
   },
 ];
 
+const WORKABLE_SALE_LEAD_STAGE_KEYS = new Set<SaleLeadWorkStage>([
+  "need_price_source",
+  "need_quote",
+  "follow_up_after_quote",
+]);
+const GAP_BUCKET_LABELS: Record<SaleLeadGapBucket, string> = {
+  lt5: "<5%",
+  "5_10": "5-10%",
+  gt10: ">10%",
+  no_price: "Chưa có giá",
+};
+
 const GAP_BUCKETS: SaleLeadGapBucket[] = ["lt5", "5_10", "gt10", "no_price"];
 const VEHICLE_IMAGE_BUCKETS = ["outside", "inside", "engine", "frame", "thumbnail"];
 
@@ -229,6 +272,45 @@ const SALE_LEAD_STAGE_TONES: Record<SaleLeadWorkStage, SaleLeadStageTone> = {
 
 export function getSaleLeadStageTone(stage: SaleLeadWorkStage): SaleLeadStageTone {
   return SALE_LEAD_STAGE_TONES[stage];
+}
+
+export function buildSaleLeadStageSummary(counts: {
+  total: number;
+  stages: Partial<Record<SaleLeadWorkStage, number>>;
+}): SaleLeadStageSummary {
+  const stages = SALE_LEAD_STAGE_CONFIG.map((stage) => {
+    const count = counts.stages[stage.key] ?? 0;
+    return {
+      ...stage,
+      count,
+      workableCount: WORKABLE_SALE_LEAD_STAGE_KEYS.has(stage.key) ? count : 0,
+    };
+  });
+
+  return {
+    total: counts.total,
+    workableTotal: stages.reduce((total, stage) => total + stage.workableCount, 0),
+    stages,
+  };
+}
+
+export function buildSaleLeadWorkableGapSummary(rows: SaleLeadFilterableRow[]): SaleLeadWorkableGapSummary {
+  const workableRows = rows.filter((row) => row.hasImages && WORKABLE_SALE_LEAD_STAGE_KEYS.has(row.workStage));
+  const counts = Object.fromEntries(GAP_BUCKETS.map((gap) => [gap, 0])) as Record<SaleLeadGapBucket, number>;
+
+  for (const row of workableRows) {
+    counts[row.gapBucket] = (counts[row.gapBucket] ?? 0) + 1;
+  }
+
+  return {
+    total: workableRows.length,
+    buckets: GAP_BUCKETS.map((gap) => ({
+      key: gap,
+      label: GAP_BUCKET_LABELS[gap],
+      count: counts[gap] ?? 0,
+      percent: workableRows.length > 0 ? Number((((counts[gap] ?? 0) / workableRows.length) * 100).toFixed(2)) : 0,
+    })),
+  };
 }
 
 function parseJsonValue(value: unknown): any {
@@ -298,9 +380,9 @@ const OUTBOUND_QUOTE_CONTEXT_RE =
 const ABSOLUTE_CAR_PRICE_RE =
   /\b\d+\s*(?:ty|ti|t)\s*\d{0,3}\s*(?:tr|trieu)?\b|\b\d{2,4}\s*(?:tr|trieu)\b|\b\d{2,4}\s*[-–]\s*\d{2,4}\b/;
 const IMPLIED_MILLION_PRICE_RE =
-  /\b(?:gia|muc gia|khung gia|muc)\s+(\d{2,4})\b|\b(\d{2,4})\s+hien tai\b/;
+  /\b(?:gia|muc gia|khung gia|muc|tam|khoang|quanh|duoc)\s+(\d{2,4})\b|\b(\d{2,4})\s+hien tai\b/;
 const IMPLIED_MILLION_PRICE_GLOBAL_RE =
-  /\b(?:gia|muc gia|khung gia|muc)\s+(\d{2,4})\b|\b(\d{2,4})\s+hien tai\b/g;
+  /\b(?:gia|muc gia|khung gia|muc|tam|khoang|quanh|duoc)\s+(\d{2,4})\b|\b(\d{2,4})\s+hien tai\b/g;
 
 export function isSaleTextQuote(content: string | null | undefined) {
   if (!content) return false;
@@ -453,6 +535,17 @@ function firstAtForHighestPrice(items: Array<{ price: number; created_at: string
     }, null);
 }
 
+export function resolveSaleLeadHighestBid(
+  crmHighestBid: number | string | null | undefined,
+  dealerHighestBid: number | string | null | undefined,
+) {
+  const crmBid = Number(crmHighestBid ?? 0);
+  if (Number.isFinite(crmBid) && crmBid > 1_000_000) return crmBid;
+
+  const dealerBid = Number(dealerHighestBid ?? 0);
+  return Number.isFinite(dealerBid) && dealerBid > 1_000_000 ? dealerBid : null;
+}
+
 export function summarizeDealerBids(rows: DealerBidLike[] | undefined) {
   const validRows = (rows ?? [])
     .map((row) => ({
@@ -550,8 +643,9 @@ export function classifySaleLeadStage(input: SaleLeadClassifierInput): SaleLeadW
   const quoteTimestamps = getQuoteTimestamps(input);
   const hasAnyQuote = hasQuoted(input);
   const hasUsableBid = Number(input.highestBid ?? 0) > 1_000_000;
+  const dealerBidCount = Number(input.preInspectionBidCount ?? 0) + Number(input.postInspectionBidCount ?? 0);
 
-  if (!hasUsableBid || input.preInspectionBidCount <= 0) return "need_price_source";
+  if (!hasUsableBid || dealerBidCount <= 0) return "need_price_source";
 
   if (!hasQuotedAfter(quoteTimestamps, input.latestPreInspectionBidAt) && !hasQuotedAtOrAboveCurrentBid(input)) return "need_quote";
 

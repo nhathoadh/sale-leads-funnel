@@ -23,12 +23,19 @@ import {
   SALE_LEAD_STAGE_CONFIG,
   formatMillionShort,
   getSaleLeadStageTone,
+  normalizeSaleLeadTeamFilter,
   type SaleLeadGapBucket,
+  type SaleLeadTeamFilter,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
 import { formatCrmValue, groupDealerBidsByDealer, hasRealDealerBidPrice } from "@/lib/sale-leads-funnel-detail";
 
 type SortKey = "last_touch_oldest" | "last_touch_newest" | "gap_asc" | "gap_desc" | "created_desc";
+
+const TEAM_OPTIONS: Array<{ value: SaleLeadTeamFilter; label: string }> = [
+  { value: "HANOI", label: "Team Hà Nội" },
+  { value: "HCM", label: "Team HCM" },
+];
 
 interface FunnelLead {
   leadId: string;
@@ -72,6 +79,7 @@ interface FunnelResponse {
   filters: {
     from: string;
     to: string;
+    team: SaleLeadTeamFilter;
     pic: string[];
     stage: SaleLeadWorkStage[];
     gap: SaleLeadGapBucket[];
@@ -373,6 +381,7 @@ function FunnelClient() {
   const params = useMemo(() => {
     const from = searchParams.get("from") || defaultFromInput();
     const to = searchParams.get("to") || todayInput();
+    const team = normalizeSaleLeadTeamFilter(searchParams.get("team"));
     const pic = searchParams.get("pic")?.split(",").filter(Boolean) ?? [];
     const stage = searchParams.get("stage")?.split(",").filter(Boolean) ?? [];
     const gap = searchParams.get("gap")?.split(",").filter(Boolean) ?? [];
@@ -390,6 +399,7 @@ function FunnelClient() {
     return {
       from,
       to,
+      team,
       pic,
       stage,
       gap,
@@ -443,6 +453,7 @@ function FunnelClient() {
     const filterOrder = normalizeFilterOrder(orderPatch ?? merged.filterOrder, activeFilterTokensFor(merged));
     next.set("from", merged.from);
     next.set("to", merged.to);
+    next.set("team", merged.team);
     next.set("sort", merged.sort);
     next.set("page", String(patch.page ?? 1));
     setCsvParam(next, "pic", merged.pic);
@@ -475,6 +486,7 @@ function FunnelClient() {
     const url = new URL("/api/sale-leads-funnel", window.location.origin);
     url.searchParams.set("from", params.from);
     url.searchParams.set("to", params.to);
+    url.searchParams.set("team", params.team);
     url.searchParams.set("sort", params.sort);
     url.searchParams.set("page", String(params.page));
     setCsvParam(url.searchParams, "pic", params.pic);
@@ -508,6 +520,7 @@ function FunnelClient() {
   }, [
     params.from,
     params.to,
+    params.team,
     params.pic.join(","),
     params.stage.join(","),
     params.gap.join(","),
@@ -642,6 +655,23 @@ function FunnelClient() {
                   className="h-8 min-w-0 rounded-md border border-slate-200 px-1.5 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
                 />
               </div>
+            </label>
+
+            <label className="grid gap-1 text-xs font-medium text-slate-500">
+              Team
+              <select
+                value={params.team}
+                onChange={(event) =>
+                  updateParams({ team: event.target.value as SaleLeadTeamFilter, pic: [] })
+                }
+                className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
+              >
+                {TEAM_OPTIONS.map((team) => (
+                  <option key={team.value} value={team.value}>
+                    {team.label}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <label className="grid gap-1 text-xs font-medium text-slate-500">

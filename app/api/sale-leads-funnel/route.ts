@@ -4,6 +4,8 @@ import { e2eQuery, vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { biddings } from "@/lib/dealer-service";
 import {
   SALE_LEAD_STAGE_CONFIG,
+  buildSaleLeadStageSummary,
+  buildSaleLeadWorkableGapSummary,
   calculateGapPercent,
   classifySaleLeadStage,
   countStoredVehicleImages,
@@ -18,6 +20,8 @@ import {
   getQuoteTimestamps,
   hasVehicleImagesFromSources,
   isInInspectionRegion,
+  normalizeSaleLeadTeamFilter,
+  resolveSaleLeadHighestBid,
   summarizeDealerBids,
   type AgentPricingEvents,
   type SaleLeadGapBucket,
@@ -26,7 +30,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-const MAX_BASE_ROWS = 500;
+const MAX_BASE_ROWS = 2_000;
 const DEFAULT_PAGE_SIZE = 50;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -157,8 +161,16 @@ export async function GET(request: Request) {
     const needsPostInspectionQuoteFilter = parseBooleanFilter(searchParams.get("needsPostInspectionQuote"));
     const filterOrder = parseCsv(searchParams.get("filterOrder"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
+    const team = normalizeSaleLeadTeamFilter(searchParams.get("team"));
 
-    const queryParams: unknown[] = [from, to];
+    const queryParams: unknown[] = [from, to, team];
+    const teamCondition = `AND EXISTS (
+           SELECT 1
+           FROM team_members tm
+           JOIN teams t ON t.id = tm.team_id
+           WHERE tm.user_id = l.pic_id
+             AND t.name = $3
+         )`;
     let picCondition = "";
     if (picIds.length > 0) {
       queryParams.push(picIds);
@@ -209,6 +221,7 @@ export async function GET(request: Request) {
        LEFT JOIN sales s ON s.user_id = u.id
        WHERE c.created_at >= $1::date
          AND c.created_at < ($2::date + INTERVAL '1 day')
+         ${teamCondition}
          ${picCondition}
        ORDER BY c.created_at DESC
        LIMIT $${queryParams.length}::int`,
@@ -272,8 +285,9 @@ export async function GET(request: Request) {
                    AND m.content ~* '[0-9]'
                    AND (
                      m.content ~* '(tỷ|ty|tỉ|ti|tr|triệu|trieu)'
-                     OR m.content ~* '[0-9]{2,4}\s*[-–]\s*[0-9]{2,4}'
-                     OR m.content ~* '(giá|gia|mức|muc|khung giá|khung gia)\s+[0-9]{2,4}'
+                     OR m.content ~* '[0-9]{2,4}[[:space:]]*[-–][[:space:]]*[0-9]{2,4}'
+                     OR m.content ~* '(giá|gia|mức|muc|khung giá|khung gia)[[:space:]]+[0-9]{2,4}'
+                     OR m.content ~* '(tầm|tam|khoảng|khoang|quanh|được|duoc)[[:space:]]+[0-9]{2,4}'
                    )
                    AND m.content ~* '(giá|gia|trả|tra|mua|khách|khach|khoảng|khoang|tầm|tam|giao dịch|giao dich)'
                ) AS sale_text_quote_messages
@@ -355,7 +369,7 @@ export async function GET(request: Request) {
         const snapshots = snapshotsFromResult(summaryByCar.get(row.car_id));
         const latest = latestSnapshot(summaryByCar.get(row.car_id));
         const bid = summarizeDealerBids((groupedBids as Record<string, any[]>)[row.car_id]);
-        const fallbackHighestBid = bid.highestBid ?? numberOrNull(row.price_highest_bid);
+        const fallbackHighestBid = resolveSaleLeadHighestBid(row.price_highest_bid, bid.highestBid);
         const zalo = row.phone ? zaloByPhone.get(row.phone) : null;
         const relationCount = Number(zalo?.relation_count ?? 0);
         const customerMessageCount = Number(zalo?.customer_message_count ?? 0);
@@ -470,6 +484,21 @@ export async function GET(request: Request) {
       .filter(Boolean) as any[];
 
     const counts = getSaleLeadFilterCounts(allRows);
+    if (searchParams.get("summary") === "stage") {
+      return NextResponse.json({
+        filters: {
+          from,
+          to,
+          team,
+          pic: picIds,
+        },
+        scanned: baseRows.length,
+        warnings: zaloUnavailable ? ["zalo_unavailable"] : [],
+        stageSummary: buildSaleLeadStageSummary(counts),
+        workableGapSummary: buildSaleLeadWorkableGapSummary(allRows),
+      });
+    }
+
     const activeFilters = {
       stages: stageFilter,
       gaps: gapFilter,
@@ -506,6 +535,7 @@ export async function GET(request: Request) {
       filters: {
         from,
         to,
+        team,
         pic: picIds,
         stage: stageFilter,
         gap: gapFilter,
