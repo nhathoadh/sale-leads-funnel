@@ -7,6 +7,18 @@ const globalForDb = globalThis as unknown as {
 };
 
 type Env = Record<string, string | undefined>;
+const RETRYABLE_DB_ERROR_CODES = new Set(["40001"]);
+const MAX_DB_QUERY_ATTEMPTS = 3;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function shouldRetryDbQuery(error: unknown) {
+  const code = typeof (error as any)?.code === "string" ? (error as any).code : "";
+  const message = typeof (error as any)?.message === "string" ? (error as any).message.toLowerCase() : "";
+  return RETRYABLE_DB_ERROR_CODES.has(code) || message.includes("conflict with recovery");
+}
 
 function sslConfigFromEnv(env: Env, ...envKeys: string[]): false | { rejectUnauthorized: false } {
   if (envKeys.some((key) => env[key] === "false" || env[key] === "true")) return false;
@@ -96,21 +108,34 @@ export function getVucarZaloPool(): Pool {
 
 async function timedQuery(pool: Pool, label: string, text: string, params?: unknown[]) {
   const start = Date.now();
-  try {
-    const res = await pool.query(text, params);
-    const duration = Date.now() - start;
-    if (duration > 500) {
-      console.warn(`Slow ${label} query detected:`, {
-        duration: `${duration}ms`,
-        query: text.substring(0, 100) + (text.length > 100 ? "..." : ""),
-        rowCount: res.rowCount,
-      });
+  for (let attempt = 1; attempt <= MAX_DB_QUERY_ATTEMPTS; attempt++) {
+    try {
+      const res = await pool.query(text, params);
+      const duration = Date.now() - start;
+      if (duration > 500) {
+        console.warn(`Slow ${label} query detected:`, {
+          duration: `${duration}ms`,
+          query: text.substring(0, 100) + (text.length > 100 ? "..." : ""),
+          rowCount: res.rowCount,
+          attempt,
+        });
+      }
+      return res;
+    } catch (error) {
+      if (attempt < MAX_DB_QUERY_ATTEMPTS && shouldRetryDbQuery(error)) {
+        console.warn(`${label} query retrying after transient replica error`, {
+          attempt,
+          code: (error as any)?.code,
+          message: (error as any)?.message,
+        });
+        await sleep(250 * attempt);
+        continue;
+      }
+      console.error(`${label.toLowerCase()} query error`, { text, error });
+      throw error;
     }
-    return res;
-  } catch (error) {
-    console.error(`${label.toLowerCase()} query error`, { text, error });
-    throw error;
   }
+  throw new Error(`${label} query failed`);
 }
 
 export async function vucarV2Query(text: string, params?: unknown[]) {

@@ -3,7 +3,11 @@ import { NextResponse } from "next/server";
 import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { biddings } from "@/lib/dealer-service";
 import { fetchZaloMessagesFromDb } from "@/lib/zalo-chat-fetcher";
-import { formatMillionShort } from "@/lib/sale-leads-funnel";
+import {
+  formatMillionShort,
+  resolveSaleLeadCustomerPrice,
+  resolveSaleLeadHighestBid,
+} from "@/lib/sale-leads-funnel";
 import {
   buildSaleLeadExternalLinks,
   mapZaloMessageForSaleLeadDetail,
@@ -82,6 +86,8 @@ export async function GET(request: Request) {
          ss.stage,
          ss.price_customer,
          ss.price_highest_bid,
+         lead_price_fallback.price_customer AS lead_price_customer_fallback,
+         lead_price_fallback.price_highest_bid AS lead_price_highest_bid_fallback,
          ss.price_sold,
          ss.reason,
          ss.notes,
@@ -93,6 +99,26 @@ export async function GET(request: Request) {
        FROM cars c
        JOIN leads l ON l.id = c.lead_id
        LEFT JOIN latest_status ss ON ss.car_id = c.id
+       LEFT JOIN LATERAL (
+         SELECT
+           ss2.price_customer,
+           ss2.price_highest_bid
+         FROM cars c2
+         JOIN sale_status ss2 ON ss2.car_id = c2.id
+         WHERE c2.lead_id = l.id
+           AND c2.id <> c.id
+           AND COALESCE(c2.is_deleted, false) = false
+           AND (ss2.price_customer > 1000000 OR ss2.price_highest_bid > 1000000)
+         ORDER BY
+           CASE
+             WHEN ss2.price_customer > 1000000 AND ss2.price_highest_bid > 1000000 THEN 0
+             WHEN ss2.price_customer > 1000000 THEN 1
+             ELSE 2
+           END,
+           ss2.updated_at DESC NULLS LAST,
+           ss2.created_at DESC NULLS LAST
+         LIMIT 1
+       ) lead_price_fallback ON true
        LEFT JOIN users u ON u.id = l.pic_id
        LEFT JOIN sales s ON s.user_id = u.id
        LEFT JOIN latest_summary ls ON ls.car_id = c.id::text
@@ -207,6 +233,16 @@ export async function GET(request: Request) {
     const messages = messagesResult.map(mapZaloMessageForSaleLeadDetail);
     const zaloRelation = zaloRelationResult.rows[0] ?? null;
     const saleWorkspace = saleWorkspaceResult.rows[0] ?? null;
+    const priceCustomer = resolveSaleLeadCustomerPrice(
+      row.price_customer,
+      null,
+      row.lead_price_customer_fallback,
+    );
+    const priceHighestBid = resolveSaleLeadHighestBid(
+      row.price_highest_bid,
+      null,
+      row.lead_price_highest_bid_fallback,
+    );
     const saleWorkspaceId = selectSaleWorkspaceId({
       eventWorkspaceId: saleWorkspace?.sale_workspace_id ? String(saleWorkspace.sale_workspace_id) : null,
       currentCarId: row.car_id ? String(row.car_id) : null,
@@ -246,8 +282,8 @@ export async function GET(request: Request) {
         plate: row.plate,
         sku: row.sku,
         crmStage: row.stage || "UNDEFINED",
-        priceCustomer: row.price_customer ?? null,
-        priceHighestBid: row.price_highest_bid ?? null,
+        priceCustomer,
+        priceHighestBid,
         priceSold: row.price_sold ?? null,
         failureReason: row.reason ?? null,
         notes: row.notes ?? null,

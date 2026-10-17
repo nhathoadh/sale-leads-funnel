@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
   SALE_LEAD_STAGE_CONFIG,
+  buildSaleLeadPicOptions,
   buildSaleLeadStageSummary,
   buildSaleLeadWorkableGapSummary,
   calculateGapPercent,
@@ -12,6 +15,8 @@ import {
   getGapBucket,
   getSaleLeadFilterCounts,
   getSaleLeadFilterFacets,
+  getSaleLeadDefaultDateRange,
+  getSaleLeadQuickMonthOptions,
   getQuoteTimestamps,
   getSaleLeadStageTone,
   normalizeSaleLeadTeamFilter,
@@ -19,11 +24,20 @@ import {
   extractSaleTextQuoteEvents,
   hasQuotedAfter,
   hasVehicleImagesFromSources,
+  resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
   summarizeDealerBids,
   type SaleLeadClassifierInput,
   type SaleLeadFilterableRow,
 } from "@/lib/sale-leads-funnel";
+
+describe("sale lead API query budget", () => {
+  it("loads up to 3000 base rows before applying funnel classifiers", () => {
+    const routeSource = readFileSync(new URL("../app/api/sale-leads-funnel/route.ts", import.meta.url), "utf8");
+
+    expect(routeSource).toContain("const MAX_BASE_ROWS = 3_000");
+  });
+});
 
 describe("sale lead team filters", () => {
   it("defaults to Hanoi and accepts Hanoi or HCM team names", () => {
@@ -32,6 +46,39 @@ describe("sale lead team filters", () => {
     expect(normalizeSaleLeadTeamFilter("unknown")).toBe("HANOI");
     expect(normalizeSaleLeadTeamFilter("hanoi")).toBe("HANOI");
     expect(normalizeSaleLeadTeamFilter("HCM")).toBe("HCM");
+  });
+});
+
+describe("sale lead date filters", () => {
+  it("defaults to the current month through today", () => {
+    expect(getSaleLeadDefaultDateRange(new Date("2026-09-27T10:30:00+07:00"))).toEqual({
+      from: "2026-09-01",
+      to: "2026-09-27",
+    });
+  });
+
+  it("builds quick month options with month bounds capped at today", () => {
+    expect(getSaleLeadQuickMonthOptions(new Date("2026-09-27T10:30:00+07:00"), 3)).toEqual([
+      { key: "2026-09", label: "09/2026", from: "2026-09-01", to: "2026-09-27" },
+      { key: "2026-08", label: "08/2026", from: "2026-08-01", to: "2026-08-31" },
+      { key: "2026-07", label: "07/2026", from: "2026-07-01", to: "2026-07-31" },
+    ]);
+  });
+});
+
+describe("sale lead PIC options", () => {
+  it("builds a stable sorted PIC list from team rows independent of the selected PIC rows", () => {
+    expect(
+      buildSaleLeadPicOptions([
+        { pic_id: "joyboy-id", pic_name: "Joyboy" },
+        { pic_id: "bach-id", pic_name: "Đặng Duy Bách" },
+        { pic_id: "bach-id", pic_name: "Đặng Duy Bách" },
+        { pic_id: null, pic_name: "Missing" },
+      ]),
+    ).toEqual([
+      { id: "bach-id", name: "Đặng Duy Bách" },
+      { id: "joyboy-id", name: "Joyboy" },
+    ]);
   });
 });
 
@@ -577,10 +624,17 @@ describe("buildSaleLeadWorkableGapSummary", () => {
 });
 
 describe("summarizeDealerBids", () => {
+  it("falls back to sibling car customer price only when the current car has none", () => {
+    expect(resolveSaleLeadCustomerPrice(450_000_000, null, 380_000_000)).toBe(450_000_000);
+    expect(resolveSaleLeadCustomerPrice(null, null, 450_000_000)).toBe(450_000_000);
+    expect(resolveSaleLeadCustomerPrice(null, 380_000_000, 450_000_000)).toBe(380_000_000);
+  });
+
   it("prefers the CRM highest bid before falling back to dealer bids", () => {
     expect(resolveSaleLeadHighestBid(80_000_000, 100_000_000)).toBe(80_000_000);
     expect(resolveSaleLeadHighestBid(null, 100_000_000)).toBe(100_000_000);
     expect(resolveSaleLeadHighestBid(0, 100_000_000)).toBe(100_000_000);
+    expect(resolveSaleLeadHighestBid(null, null, 345_000_000)).toBe(345_000_000);
   });
 
   it("anchors a repeated highest pre-inspection bid at the first time that price appeared", () => {

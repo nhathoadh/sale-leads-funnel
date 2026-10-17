@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/sale-leads-funnel/snapshots/rebuild",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}

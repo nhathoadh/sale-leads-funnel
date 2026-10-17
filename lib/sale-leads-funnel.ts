@@ -16,6 +16,40 @@ export type SaleLeadTeamFilter = "HANOI" | "HCM";
 
 export const DEFAULT_SALE_LEAD_TEAM_FILTER: SaleLeadTeamFilter = "HANOI";
 
+function formatDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function getSaleLeadDefaultDateRange(now = new Date()) {
+  return {
+    from: formatDateInput(new Date(now.getFullYear(), now.getMonth(), 1)),
+    to: formatDateInput(now),
+  };
+}
+
+export function getSaleLeadQuickMonthOptions(now = new Date(), count = 6) {
+  const options: Array<{ key: string; label: string; from: string; to: string }> = [];
+  const safeCount = Math.max(1, count);
+
+  for (let offset = 0; offset < safeCount; offset += 1) {
+    const monthStart = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+    const monthEnd = offset === 0 ? now : new Date(now.getFullYear(), now.getMonth() - offset + 1, 0);
+    const month = String(monthStart.getMonth() + 1).padStart(2, "0");
+    const year = monthStart.getFullYear();
+    options.push({
+      key: `${year}-${month}`,
+      label: `${month}/${year}`,
+      from: formatDateInput(monthStart),
+      to: formatDateInput(monthEnd),
+    });
+  }
+
+  return options;
+}
+
 export function normalizeSaleLeadTeamFilter(value: string | null | undefined): SaleLeadTeamFilter {
   const normalized = String(value ?? "").trim().toUpperCase();
   return normalized === "HCM" ? "HCM" : DEFAULT_SALE_LEAD_TEAM_FILTER;
@@ -182,6 +216,24 @@ export interface SaleLeadWorkableGapSummaryBucket {
 export interface SaleLeadWorkableGapSummary {
   total: number;
   buckets: SaleLeadWorkableGapSummaryBucket[];
+}
+
+export interface SaleLeadPicOptionSource {
+  pic_id?: string | null;
+  pic_name?: string | null;
+}
+
+export function buildSaleLeadPicOptions(rows: SaleLeadPicOptionSource[]) {
+  return Array.from(
+    new Map(
+      rows
+        .filter((row) => row.pic_id)
+        .map((row) => [
+          String(row.pic_id),
+          { id: String(row.pic_id), name: row.pic_name ? String(row.pic_name) : String(row.pic_id) },
+        ]),
+    ).values(),
+  ).sort((a, b) => a.name.localeCompare(b.name, "vi"));
 }
 
 export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
@@ -538,12 +590,31 @@ function firstAtForHighestPrice(items: Array<{ price: number; created_at: string
 export function resolveSaleLeadHighestBid(
   crmHighestBid: number | string | null | undefined,
   dealerHighestBid: number | string | null | undefined,
+  siblingCarHighestBid?: number | string | null,
 ) {
   const crmBid = Number(crmHighestBid ?? 0);
   if (Number.isFinite(crmBid) && crmBid > 1_000_000) return crmBid;
 
   const dealerBid = Number(dealerHighestBid ?? 0);
-  return Number.isFinite(dealerBid) && dealerBid > 1_000_000 ? dealerBid : null;
+  if (Number.isFinite(dealerBid) && dealerBid > 1_000_000) return dealerBid;
+
+  const siblingBid = Number(siblingCarHighestBid ?? 0);
+  return Number.isFinite(siblingBid) && siblingBid > 1_000_000 ? siblingBid : null;
+}
+
+export function resolveSaleLeadCustomerPrice(
+  crmCustomerPrice: number | string | null | undefined,
+  summaryCustomerPrice: number | string | null | undefined,
+  siblingCarCustomerPrice?: number | string | null,
+) {
+  const crmPrice = Number(crmCustomerPrice ?? 0);
+  if (Number.isFinite(crmPrice) && crmPrice > 1_000_000) return crmPrice;
+
+  const summaryPrice = Number(summaryCustomerPrice ?? 0);
+  if (Number.isFinite(summaryPrice) && summaryPrice > 1_000_000) return summaryPrice;
+
+  const siblingPrice = Number(siblingCarCustomerPrice ?? 0);
+  return Number.isFinite(siblingPrice) && siblingPrice > 1_000_000 ? siblingPrice : null;
 }
 
 export function summarizeDealerBids(rows: DealerBidLike[] | undefined) {

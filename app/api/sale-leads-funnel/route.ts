@@ -4,6 +4,7 @@ import { e2eQuery, vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { biddings } from "@/lib/dealer-service";
 import {
   SALE_LEAD_STAGE_CONFIG,
+  buildSaleLeadPicOptions,
   buildSaleLeadStageSummary,
   buildSaleLeadWorkableGapSummary,
   calculateGapPercent,
@@ -21,16 +22,22 @@ import {
   hasVehicleImagesFromSources,
   isInInspectionRegion,
   normalizeSaleLeadTeamFilter,
+  resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
   summarizeDealerBids,
   type AgentPricingEvents,
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
+import {
+  CREATE_SALE_LEAD_FUNNEL_SNAPSHOT_TABLE_SQL,
+  writeSaleLeadSnapshotFile,
+} from "@/lib/sale-leads-funnel-snapshots";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-const MAX_BASE_ROWS = 2_000;
+const MAX_BASE_ROWS = 3_000;
 const DEFAULT_PAGE_SIZE = 50;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -139,6 +146,201 @@ function sortRows<T extends { lastTouchAt: string | null; gapPercent: number | n
   return sorted;
 }
 
+function canWriteSnapshotCache(request: Request) {
+  const secret = process.env.SALE_LEADS_SNAPSHOT_SECRET;
+  const authorization = request.headers.get("authorization");
+  const headerSecret = request.headers.get("x-sale-leads-snapshot-secret");
+  const userAgent = request.headers.get("user-agent") ?? "";
+
+  if (!secret) {
+    return process.env.NODE_ENV !== "production" || userAgent.includes("vercel-cron");
+  }
+
+  return authorization === `Bearer ${secret}` || headerSecret === secret;
+}
+
+function latestTimestampForSnapshot(...values: Array<string | null | undefined>) {
+  return values.reduce<string | null>((latest, value) => {
+    if (!value) return latest;
+    const time = new Date(value).getTime();
+    if (!Number.isFinite(time)) return latest;
+    const latestTime = latest ? new Date(latest).getTime() : null;
+    return latestTime === null || time > latestTime ? value : latest;
+  }, null);
+}
+
+async function writeSnapshotCache(input: {
+  rows: any[];
+  from: string;
+  to: string;
+  team: string;
+  picIds: string[];
+}) {
+  const snapshotRows = input.rows.map((row) => ({
+    car_id: row.carId,
+    lead_id: row.leadId,
+    phone: row.phone,
+    team: input.team,
+    pic_id: row.picId,
+    pic_name: row.picName,
+    car_created_at: row.createdAt,
+    work_stage: row.workStage,
+    gap_bucket: row.gapBucket,
+    has_images: row.hasImages,
+    inspected: row.inspected,
+    no_human_touch: row.noHumanTouch,
+    under_two_bids: row.underTwoBids,
+    hot_lead: row.hotLead,
+    needs_inspection_booking: row.needsInspectionBooking,
+    needs_post_inspection_quote: row.needsPostInspectionQuote,
+    last_touch_at: row.lastTouchAt,
+    source_updated_at: latestTimestampForSnapshot(
+      row.lastTouchAt,
+      row.latestPreInspectionBidAt,
+      row.latestPostInspectionBidAt,
+      row.createdAt,
+    ),
+    payload: {
+      priceCustomer: row.priceCustomer,
+      highestBid: row.highestBid,
+      qualified: row.qualified,
+      dealerBidDealerCount: row.dealerBidDealerCount,
+      quoteTimestamps: row.quoteTimestamps,
+      lastSaleAt: row.lastSaleAt,
+      lastCustomerAt: row.lastCustomerAt,
+    },
+  }));
+
+  try {
+    await vucarV2Query(CREATE_SALE_LEAD_FUNNEL_SNAPSHOT_TABLE_SQL);
+
+    const deleteParams: unknown[] = [input.team, input.from, input.to];
+    let picCondition = "";
+    if (input.picIds.length > 0) {
+      deleteParams.push(input.picIds);
+      picCondition = `AND pic_id = ANY($${deleteParams.length}::uuid[])`;
+    }
+    await vucarV2Query(
+      `
+        DELETE FROM sale_leads_funnel_snapshots
+        WHERE UPPER(team) = UPPER($1::text)
+          AND car_created_at >= $2::date
+          AND car_created_at < ($3::date + INTERVAL '1 day')
+          ${picCondition}
+      `,
+      deleteParams,
+    );
+
+    if (snapshotRows.length > 0) {
+      await vucarV2Query(
+        `
+          WITH input AS (
+            SELECT *
+            FROM jsonb_to_recordset($1::jsonb) AS x(
+              car_id uuid,
+              lead_id uuid,
+              phone text,
+              team text,
+              pic_id uuid,
+              pic_name text,
+              car_created_at timestamptz,
+              work_stage text,
+              gap_bucket text,
+              has_images boolean,
+              inspected boolean,
+              no_human_touch boolean,
+              under_two_bids boolean,
+              hot_lead boolean,
+              needs_inspection_booking boolean,
+              needs_post_inspection_quote boolean,
+              last_touch_at timestamptz,
+              source_updated_at timestamptz,
+              payload jsonb
+            )
+          )
+          INSERT INTO sale_leads_funnel_snapshots (
+            car_id,
+            lead_id,
+            phone,
+            team,
+            pic_id,
+            pic_name,
+            car_created_at,
+            work_stage,
+            gap_bucket,
+            has_images,
+            inspected,
+            no_human_touch,
+            under_two_bids,
+            hot_lead,
+            needs_inspection_booking,
+            needs_post_inspection_quote,
+            last_touch_at,
+            source_updated_at,
+            computed_at,
+            payload
+          )
+          SELECT
+            car_id,
+            lead_id,
+            phone,
+            team,
+            pic_id,
+            pic_name,
+            car_created_at,
+            work_stage,
+            gap_bucket,
+            has_images,
+            inspected,
+            no_human_touch,
+            under_two_bids,
+            hot_lead,
+            needs_inspection_booking,
+            needs_post_inspection_quote,
+            last_touch_at,
+            source_updated_at,
+            now(),
+            COALESCE(payload, '{}'::jsonb)
+          FROM input
+          ON CONFLICT (car_id) DO UPDATE SET
+            lead_id = EXCLUDED.lead_id,
+            phone = EXCLUDED.phone,
+            team = EXCLUDED.team,
+            pic_id = EXCLUDED.pic_id,
+            pic_name = EXCLUDED.pic_name,
+            car_created_at = EXCLUDED.car_created_at,
+            work_stage = EXCLUDED.work_stage,
+            gap_bucket = EXCLUDED.gap_bucket,
+            has_images = EXCLUDED.has_images,
+            inspected = EXCLUDED.inspected,
+            no_human_touch = EXCLUDED.no_human_touch,
+            under_two_bids = EXCLUDED.under_two_bids,
+            hot_lead = EXCLUDED.hot_lead,
+            needs_inspection_booking = EXCLUDED.needs_inspection_booking,
+            needs_post_inspection_quote = EXCLUDED.needs_post_inspection_quote,
+            last_touch_at = EXCLUDED.last_touch_at,
+            source_updated_at = EXCLUDED.source_updated_at,
+            computed_at = now(),
+            payload = EXCLUDED.payload
+        `,
+        [JSON.stringify(snapshotRows)],
+      );
+    }
+
+    return { storage: "db", written: snapshotRows.length };
+  } catch (error) {
+    console.warn("[sale-leads-funnel] DB snapshot cache unavailable, falling back to file:", error instanceof Error ? error.message : error);
+    const fileResult = await writeSaleLeadSnapshotFile({
+      rows: snapshotRows as any,
+      from: input.from,
+      to: input.to,
+      team: input.team,
+      picIds: input.picIds,
+    });
+    return { storage: "file", written: fileResult.written, path: fileResult.path, warning: error instanceof Error ? error.message : "db_unavailable" };
+  }
+}
+
 export async function GET(request: Request) {
   try {
     const searchParams = new URL(request.url).searchParams;
@@ -162,6 +364,10 @@ export async function GET(request: Request) {
     const filterOrder = parseCsv(searchParams.get("filterOrder"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
     const team = normalizeSaleLeadTeamFilter(searchParams.get("team"));
+    const shouldCacheSnapshots = searchParams.get("cacheSnapshots") === "true";
+    if (shouldCacheSnapshots && !canWriteSnapshotCache(request)) {
+      return NextResponse.json({ error: "Unauthorized snapshot cache write" }, { status: 401 });
+    }
 
     const queryParams: unknown[] = [from, to, team];
     const teamCondition = `AND EXISTS (
@@ -208,6 +414,8 @@ export async function GET(request: Request) {
          ss.stage,
          ss.price_customer,
          ss.price_highest_bid,
+         lead_price_fallback.price_customer AS lead_price_customer_fallback,
+         lead_price_fallback.price_highest_bid AS lead_price_highest_bid_fallback,
          ss.price_sold,
          ss.first_payment_date,
          ss.qualified,
@@ -217,6 +425,26 @@ export async function GET(request: Request) {
        FROM leads l
        JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
        LEFT JOIN latest_status ss ON ss.car_id = c.id
+       LEFT JOIN LATERAL (
+         SELECT
+           ss2.price_customer,
+           ss2.price_highest_bid
+         FROM cars c2
+         JOIN sale_status ss2 ON ss2.car_id = c2.id
+         WHERE c2.lead_id = l.id
+           AND c2.id <> c.id
+           AND COALESCE(c2.is_deleted, false) = false
+           AND (ss2.price_customer > 1000000 OR ss2.price_highest_bid > 1000000)
+         ORDER BY
+           CASE
+             WHEN ss2.price_customer > 1000000 AND ss2.price_highest_bid > 1000000 THEN 0
+             WHEN ss2.price_customer > 1000000 THEN 1
+             ELSE 2
+           END,
+           ss2.updated_at DESC NULLS LAST,
+           ss2.created_at DESC NULLS LAST
+         LIMIT 1
+       ) lead_price_fallback ON true
        LEFT JOIN users u ON u.id = l.pic_id
        LEFT JOIN sales s ON s.user_id = u.id
        WHERE c.created_at >= $1::date
@@ -229,6 +457,25 @@ export async function GET(request: Request) {
     );
 
     const baseRows = baseResult.rows;
+    const picOptionRows =
+      picIds.length > 0
+        ? (
+            await vucarV2Query(
+              `SELECT DISTINCT
+                 l.pic_id::text AS pic_id,
+                 COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name, l.pic_id::text) AS pic_name
+               FROM leads l
+               JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
+               LEFT JOIN users u ON u.id = l.pic_id
+               LEFT JOIN sales s ON s.user_id = u.id
+               WHERE c.created_at >= $1::date
+                 AND c.created_at < ($2::date + INTERVAL '1 day')
+                 ${teamCondition}
+                 AND l.pic_id IS NOT NULL`,
+              [from, to, team],
+            )
+          ).rows
+        : baseRows;
     const carIds = baseRows.map((row: any) => row.car_id).filter(Boolean);
     const phones = Array.from(new Set(baseRows.map((row: any) => row.phone).filter(Boolean)));
     let zaloUnavailable = false;
@@ -369,7 +616,11 @@ export async function GET(request: Request) {
         const snapshots = snapshotsFromResult(summaryByCar.get(row.car_id));
         const latest = latestSnapshot(summaryByCar.get(row.car_id));
         const bid = summarizeDealerBids((groupedBids as Record<string, any[]>)[row.car_id]);
-        const fallbackHighestBid = resolveSaleLeadHighestBid(row.price_highest_bid, bid.highestBid);
+        const fallbackHighestBid = resolveSaleLeadHighestBid(
+          row.price_highest_bid,
+          bid.highestBid,
+          row.lead_price_highest_bid_fallback,
+        );
         const zalo = row.phone ? zaloByPhone.get(row.phone) : null;
         const relationCount = Number(zalo?.relation_count ?? 0);
         const customerMessageCount = Number(zalo?.customer_message_count ?? 0);
@@ -378,7 +629,11 @@ export async function GET(request: Request) {
         const customerZaloImageCount = Number(zalo?.customer_image_message_count ?? 0);
         const inspected = inspectionByCar.has(row.car_id);
         const booked = bookingByCar.has(row.car_id);
-        const priceCustomer = numberOrNull(row.price_customer ?? latest?.price_customer);
+        const priceCustomer = resolveSaleLeadCustomerPrice(
+          row.price_customer,
+          latest?.price_customer,
+          row.lead_price_customer_fallback,
+        );
         const hasCustomerAndDealerPrice = Boolean(priceCustomer && fallbackHighestBid);
         const dealerBidDealerCount = Number(bid.validDealerBidDealerCount ?? 0);
         const noHumanTouch = relationCount > 0 && humanMessageCount <= 0;
@@ -446,6 +701,7 @@ export async function GET(request: Request) {
           sku: row.sku,
           createdAt: row.car_created_at ?? row.lead_created_at,
           crmStage: row.stage || "UNDEFINED",
+          qualified: row.qualified || "UNDEFINED_QUALIFIED",
           firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
           workStage,
           priceCustomer,
@@ -484,6 +740,11 @@ export async function GET(request: Request) {
       .filter(Boolean) as any[];
 
     const counts = getSaleLeadFilterCounts(allRows);
+    const stageSummary = buildSaleLeadStageSummary(counts);
+    const workableGapSummary = buildSaleLeadWorkableGapSummary(allRows);
+    const snapshotCache = shouldCacheSnapshots
+      ? await writeSnapshotCache({ rows: allRows, from, to, team, picIds })
+      : null;
     if (searchParams.get("summary") === "stage") {
       return NextResponse.json({
         filters: {
@@ -494,8 +755,9 @@ export async function GET(request: Request) {
         },
         scanned: baseRows.length,
         warnings: zaloUnavailable ? ["zalo_unavailable"] : [],
-        stageSummary: buildSaleLeadStageSummary(counts),
-        workableGapSummary: buildSaleLeadWorkableGapSummary(allRows),
+        snapshotCache,
+        stageSummary,
+        workableGapSummary,
       });
     }
 
@@ -523,13 +785,7 @@ export async function GET(request: Request) {
     const start = (page - 1) * perPage;
     const leads = sortedRows.slice(start, start + perPage);
 
-    const picOptions = Array.from(
-      new Map(
-        baseRows
-          .filter((row: any) => row.pic_id)
-          .map((row: any) => [row.pic_id, { id: row.pic_id, name: row.pic_name || row.pic_id }]),
-      ).values(),
-    ).sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), "vi"));
+    const picOptions = buildSaleLeadPicOptions(picOptionRows);
 
     return NextResponse.json({
       filters: {
@@ -558,7 +814,10 @@ export async function GET(request: Request) {
       perPage,
       totalPages: Math.max(1, Math.ceil(total / perPage)),
       warnings: zaloUnavailable ? ["zalo_unavailable"] : [],
+      snapshotCache,
       counts,
+      stageSummary,
+      workableGapSummary,
       facets,
       stages: SALE_LEAD_STAGE_CONFIG.map((stage) => ({ ...stage, count: facets.stages[stage.key] ?? 0 })),
       picOptions,

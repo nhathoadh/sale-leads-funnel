@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildVucarZaloPoolConfig } from "@/lib/db";
+import { buildVucarZaloPoolConfig, shouldRetryDbQuery } from "@/lib/db";
 
 describe("buildVucarZaloPoolConfig", () => {
   it("uses ZALO_DATABASE_URL before split Zalo DB env fields", () => {
@@ -48,5 +48,21 @@ describe("buildVucarZaloPoolConfig", () => {
       password: "secret",
       ssl: false,
     });
+  });
+});
+
+describe("shouldRetryDbQuery", () => {
+  it("retries read-replica recovery conflicts", () => {
+    expect(
+      shouldRetryDbQuery({
+        code: "40001",
+        message: "canceling statement due to conflict with recovery",
+      }),
+    ).toBe(true);
+  });
+
+  it("does not retry schema or credential errors", () => {
+    expect(shouldRetryDbQuery({ code: "42P01", message: 'relation "x" does not exist' })).toBe(false);
+    expect(shouldRetryDbQuery({ code: "28P01", message: "password authentication failed" })).toBe(false);
   });
 });
