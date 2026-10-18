@@ -563,6 +563,18 @@ export async function GET(request: Request) {
     const team = normalizeHanoiFunnelTeamFilter(searchParams.get("team"));
     const pic = parseHanoiFunnelPicFilter(searchParams.get("pic"));
     const picFilter = pic.length > 0 ? pic : null;
+    const picOptionRows = await vucarV2Query(
+      `SELECT DISTINCT
+         u.id::text AS "id",
+         COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name, u.id::text) AS "name"
+       FROM users u
+       LEFT JOIN sales s ON s.user_id = u.id
+       JOIN team_members tm ON tm.user_id = u.id
+       JOIN teams t ON t.id = tm.team_id
+       WHERE ${teamMembershipCondition(1)}
+       ORDER BY "name", "id"`,
+      [team],
+    );
     const detailedSaleCyclePromise = optionalHanoiChart(
       "detailed sale cycle",
       readDetailedSaleCycleSummary({ from, to, team, picFilter }),
@@ -1257,6 +1269,7 @@ export async function GET(request: Request) {
     });
     const response: HanoiFunnelResponse = {
       filters: { from, to, team, pic },
+      picOptions: picOptionRows.rows,
       overview: buildHanoiOverviewMetrics({
         totalLeads: toNumber(row.totalLeads),
         soldCars: toNumber(row.overviewSoldCars),

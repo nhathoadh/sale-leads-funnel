@@ -1731,7 +1731,7 @@ function FunnelClient() {
   };
   const picOptions =
     params.tab === "hanoi-funnel"
-      ? (hanoiData?.byUser ?? []).map((user) => ({ id: user.userId, name: user.displayName }))
+      ? hanoiData?.picOptions ?? []
       : leadPicOptions;
   const headerTotal = params.tab === "hanoi-funnel" ? hanoiData?.overview.totalLeads ?? 0 : data?.total ?? 0;
   const headerScanned = params.tab === "hanoi-funnel" ? hanoiData?.snapshotMeta?.rows ?? 0 : data?.scanned ?? 0;

@@ -219,6 +219,7 @@ export type HanoiSaleSortKey =
 export type HanoiSortDirection = "asc" | "desc";
 
 export interface HanoiFunnelResponse {
+  picOptions: Array<{ id: string; name: string }>;
   filters: {
     from: string;
     to: string;
