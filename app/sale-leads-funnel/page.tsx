@@ -1305,6 +1305,10 @@ function FunnelClient() {
   const [leadPicOptions, setLeadPicOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [hanoiData, setHanoiData] = useState<HanoiFunnelResponse | null>(null);
+  const [hanoiPicOptions, setHanoiPicOptions] = useState<{
+    team: string;
+    options: HanoiFunnelResponse["picOptions"];
+  } | null>(null);
   const [hanoiLoading, setHanoiLoading] = useState(false);
   const [hanoiError, setHanoiError] = useState<string | null>(null);
   const [hanoiStageCache, setHanoiStageCache] = useState<{
@@ -1560,6 +1564,31 @@ function FunnelClient() {
   ]);
 
   useEffect(() => {
+    if (params.tab !== "hanoi-funnel" || hanoiPicOptions?.team === params.team) return;
+
+    const controller = new AbortController();
+    let active = true;
+    const url = new URL("/api/sale-leads-funnel/hanoi-funnel", window.location.origin);
+    url.searchParams.set("team", params.team);
+    url.searchParams.set("options", "pic");
+    fetch(url, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<Pick<HanoiFunnelResponse, "picOptions">>;
+      })
+      .then((payload) => {
+        if (active) setHanoiPicOptions({ team: params.team, options: payload.picOptions });
+      })
+      .catch((err) => {
+        if (active && err.name !== "AbortError") console.warn("Unable to load Hanoi PIC options", err);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [params.tab, params.team, hanoiPicOptions?.team]);
+
+  useEffect(() => {
     if (params.tab !== "hanoi-funnel") return;
 
     const controller = new AbortController();
@@ -1731,7 +1760,9 @@ function FunnelClient() {
   };
   const picOptions =
     params.tab === "hanoi-funnel"
-      ? hanoiData?.picOptions ?? []
+      ? hanoiPicOptions?.team === params.team
+        ? hanoiPicOptions.options
+        : hanoiData?.filters.team === params.team ? hanoiData.picOptions : []
       : leadPicOptions;
   const headerTotal = params.tab === "hanoi-funnel" ? hanoiData?.overview.totalLeads ?? 0 : data?.total ?? 0;
   const headerScanned = params.tab === "hanoi-funnel" ? hanoiData?.snapshotMeta?.rows ?? 0 : data?.scanned ?? 0;

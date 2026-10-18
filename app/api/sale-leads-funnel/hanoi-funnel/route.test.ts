@@ -31,7 +31,7 @@ describe("Hanoi funnel PIC options", () => {
         return { rows: members } as any;
       }
       if (sql.includes('AS "userId"')) {
-        const selected = members.find((member) => member.id === (params?.[2] as string[])?.[0])!;
+        const selected = members.find((member) => member.id === (params?.[2] as string[])?.[0]) ?? members[0];
         return { rows: [{ userId: selected.id, displayName: selected.name }] } as any;
       }
       return { rows: [] } as any;
@@ -48,5 +48,14 @@ describe("Hanoi funnel PIC options", () => {
       expect(body.picOptions).toEqual(members);
       expect(body.byUser.map((row: { userId: string }) => row.userId)).toEqual([member.id]);
     }
+  });
+
+  it("serves PIC options without waiting for any chart queries", async () => {
+    const response = await GET(new Request(
+      "http://localhost/api/sale-leads-funnel/hanoi-funnel?team=HANOI&options=pic",
+    ));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ picOptions: members });
+    expect(vi.mocked(vucarV2Query).mock.calls).toHaveLength(1);
   });
 });

@@ -575,6 +575,9 @@ export async function GET(request: Request) {
        ORDER BY "name", "id"`,
       [team],
     );
+    if (searchParams.get("options") === "pic") {
+      return NextResponse.json({ picOptions: picOptionRows.rows });
+    }
     const detailedSaleCyclePromise = optionalHanoiChart(
       "detailed sale cycle",
       readDetailedSaleCycleSummary({ from, to, team, picFilter }),
