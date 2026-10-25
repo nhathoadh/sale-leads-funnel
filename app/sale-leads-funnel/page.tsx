@@ -1963,14 +1963,16 @@ function FunnelClient() {
               <section className="space-y-1.5 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
                 <FilterTitle>Trạng thái</FilterTitle>
                 <div className="grid grid-cols-2 gap-1.5">
-                  <CountFilterButton
-                    active={params.southernLead}
-                    label="Lead miền Nam"
-                    count={data?.facets?.status.southernLead ?? data?.counts?.southernLead ?? 0}
-                    tone="teal"
-                    title="Vị trí xe thuộc Đông Nam Bộ hoặc Tây Nam Bộ, không phụ thuộc team sale."
-                    onClick={() => toggleStatus("southernLead")}
-                  />
+                  <div className="col-span-2 grid">
+                    <CountFilterButton
+                      active={params.southernLead}
+                      label="Lead miền Nam"
+                      count={data?.facets?.status.southernLead ?? data?.counts?.southernLead ?? 0}
+                      tone="teal"
+                      title="Vị trí xe thuộc Đông Nam Bộ hoặc Tây Nam Bộ, không phụ thuộc team sale."
+                      onClick={() => toggleStatus("southernLead")}
+                    />
+                  </div>
                   <CountFilterButton
                     active={params.hasImages}
                     label="Có ảnh"
