@@ -1255,7 +1255,11 @@ function HanoiFunnelDashboard({
       </section>
 
       <section className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
-        <HanoiLeadQualityByDayChart rows={data.leadQualityByDay} />
+        {data.leadQualityError ? (
+          <HanoiStageChartPlaceholder title="Qualified leads theo ngày" loading={false} error={data.leadQualityError} progress={0} />
+        ) : (
+          <HanoiLeadQualityByDayChart rows={data.leadQualityByDay} />
+        )}
         <HanoiWinCasesByDayChart rows={data.winCasesByDay} />
       </section>
 

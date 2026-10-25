@@ -30,12 +30,13 @@ import {
 } from "@/lib/hanoi-funnel";
 import {
   countStoredVehicleImages,
+  classifySaleLeadStage,
   extractSaleTextQuoteEvents,
+  hasVehicleImagesFromSources,
 } from "@/lib/sale-leads-funnel";
 import {
   buildSaleLeadSnapshotSummaries,
   mapSnapshotDbRow,
-  readSaleLeadSnapshotFileDailyRows,
   readSaleLeadSnapshotFileSummaries,
   type SaleLeadSnapshotSummaries,
 } from "@/lib/sale-leads-funnel-snapshots";
@@ -210,63 +211,6 @@ async function readSnapshotSummaries(input: {
       return null;
     });
   }
-}
-
-async function readSnapshotOperationalRows(input: {
-  from: string;
-  to: string;
-  team: string;
-  pic: string[];
-}): Promise<Array<{ carId: string; leadId: string; workStage: string | null; hasImages: boolean }>> {
-  const params: unknown[] = [input.from, input.to, input.team];
-  let picCondition = "";
-  if (input.pic.length > 0) {
-    params.push(input.pic);
-    picCondition = `AND pic_id = ANY($${params.length}::uuid[])`;
-  }
-
-  try {
-    const result = await vucarV2Query(
-      `
-        SELECT
-          car_id::text AS "carId",
-          lead_id::text AS "leadId",
-          work_stage AS "workStage",
-          has_images AS "hasImages"
-        FROM sale_leads_funnel_snapshots
-        WHERE car_created_at >= $1::date
-          AND car_created_at < ($2::date + INTERVAL '1 day')
-          AND UPPER(team) = UPPER($3::text)
-          ${picCondition}
-      `,
-      params,
-    );
-
-    if (result.rows.length > 0) {
-      return result.rows.map((row) => ({
-        carId: String(row.carId),
-        leadId: String(row.leadId),
-        workStage: typeof row.workStage === "string" ? row.workStage : null,
-        hasImages: row.hasImages === true,
-      }));
-    }
-  } catch (error) {
-    console.warn("[hanoi-funnel] snapshot operational rows unavailable:", error instanceof Error ? error.message : error);
-  }
-
-  return readSaleLeadSnapshotFileDailyRows(input)
-    .then((rows) =>
-      rows.map((row) => ({
-        carId: row.carId,
-        leadId: row.leadId,
-        workStage: row.workStage,
-        hasImages: row.hasImages,
-      })),
-    )
-    .catch((fileError) => {
-      console.warn("[hanoi-funnel] file snapshot operational rows unavailable:", fileError instanceof Error ? fileError.message : fileError);
-      return [];
-    });
 }
 
 async function readDetailedSaleCyclePeriod(input: {
@@ -1051,13 +995,21 @@ export async function GET(request: Request) {
         latest_status AS (
           SELECT DISTINCT ON (ss.car_id)
             ss.car_id,
-            ss.qualified
+            ss.qualified,
+            ss.stage,
+            ss.intention,
+            ss.first_payment_date
           FROM sale_status ss
           ORDER BY ss.car_id, ss.updated_at DESC NULLS LAST, ss.created_at DESC NULLS LAST
         )
         SELECT
           c.id::text AS "carId",
           l.id::text AS "leadId",
+          l.phone,
+          c.additional_images AS "additionalImages",
+          ls.stage AS "crmStage",
+          ls.intention,
+          ls.first_payment_date AS "firstPaymentDate",
           (l.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date::text AS day,
           COALESCE(ls.qualified::text, 'UNDEFINED_QUALIFIED') AS qualified
         FROM members m
@@ -1069,6 +1021,57 @@ export async function GET(request: Request) {
       `,
       [from, to, picFilter, team],
     );
+    const qualityCarIds = dailyLeadRows.rows.map((row) => String(row.carId));
+    const qualityPhones = Array.from(new Set(dailyLeadRows.rows.map((row) => row.phone).filter(Boolean)));
+    let leadQualityError: string | null = null;
+    const qualityUnavailable = (error: unknown) => {
+      console.warn("[hanoi-funnel] daily lead quality unavailable:", error instanceof Error ? error.message : error);
+      leadQualityError = "Không tải đủ dữ liệu ảnh và phản hồi để phân loại lead.";
+      return { rows: [] };
+    };
+    const [qualitySummaries, qualityZalo] = await Promise.all([
+      qualityCarIds.length > 0
+        ? vucarV2Query(
+            `SELECT DISTINCT ON (c.id)
+               c.id::text AS car_id, sp.result
+             FROM cars c
+             JOIN leads l ON l.id = c.lead_id
+             JOIN chat_summary cs ON cs.lead_id = l.id
+             JOIN summary_properties sp ON sp.summary_id = cs.id
+             WHERE c.id = ANY($1::uuid[])
+             ORDER BY c.id, sp.created_at DESC`,
+            [qualityCarIds],
+          ).catch(qualityUnavailable)
+        : Promise.resolve({ rows: [] }),
+      qualityPhones.length > 0
+        ? vucarZaloQuery(
+            `SELECT lr.phone,
+               COUNT(DISTINCT lr.friend_id) AS "relationCount",
+               COUNT(m.msg_id) FILTER (WHERE m.is_self = false) AS "customerMessageCount",
+               COUNT(m.msg_id) FILTER (
+                 WHERE m.is_self = false AND m.content IS NOT NULL AND (
+                   m.msg_type = 'chat.photo' OR (
+                     m.content LIKE '{%'
+                     AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
+                     AND (
+                       (m.content LIKE '%"width"%' AND m.content LIKE '%"height"%')
+                       OR m.content LIKE '%https://photo-%'
+                       OR m.content LIKE '%https://photo.%'
+                       OR m.content LIKE '%zpc.zdn.vn%'
+                     )
+                   )
+                 )
+               ) AS "customerImageCount"
+             FROM leads_relation lr
+             LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
+             WHERE lr.phone = ANY($1::text[])
+             GROUP BY lr.phone`,
+            [qualityPhones],
+          ).catch(qualityUnavailable)
+        : Promise.resolve({ rows: [] }),
+    ]);
+    const qualitySummaryByCar = new Map(qualitySummaries.rows.map((row) => [String(row.car_id), parseJsonValue(row.result)]));
+    const qualityZaloByPhone = new Map(qualityZalo.rows.map((row) => [row.phone, row]));
     const dailyLeadIntakeRows = await vucarV2Query(
       `
         WITH members AS (
@@ -1197,9 +1200,6 @@ export async function GET(request: Request) {
       if (!lead || minutes <= 0) return [];
       return [{ day, leadId: lead.leadId, minutes }];
     });
-    const snapshotOperationalRows = await readSnapshotOperationalRows({ from, to, team, pic });
-    const operationalByCar = new Map(snapshotOperationalRows.map((row) => [row.carId, row]));
-    const operationalByLead = new Map(snapshotOperationalRows.map((row) => [row.leadId, row]));
     const winDailyRows = await vucarV2Query(
       `
         WITH members AS (
@@ -1227,14 +1227,33 @@ export async function GET(request: Request) {
     const dailyCharts = buildHanoiDailyLeadCharts({
       from,
       to,
-      leadRows: dailyLeadRows.rows.map((dailyRow: any) => ({
-        hasImages:
-          (operationalByCar.get(String(dailyRow.carId)) ?? operationalByLead.get(String(dailyRow.leadId)))?.hasImages === true,
-        workStage:
-          (operationalByCar.get(String(dailyRow.carId)) ?? operationalByLead.get(String(dailyRow.leadId)))?.workStage ?? null,
-        day: String(dailyRow.day),
-        qualified: dailyRow.qualified ?? null,
-      })),
+      leadRows: dailyLeadRows.rows.map((dailyRow: any) => {
+        const summary = qualitySummaryByCar.get(String(dailyRow.carId));
+        const zalo = qualityZaloByPhone.get(dailyRow.phone);
+        const hasImages = hasVehicleImagesFromSources({
+          additionalImages: dailyRow.additionalImages,
+          customerZaloImageCount: Number(zalo?.customerImageCount ?? 0),
+          summaryHadImage: summary?.had_car_image === true || summary?.had_image === true,
+        });
+        return {
+          hasImages,
+          workStage: classifySaleLeadStage({
+            crmStage: dailyRow.crmStage,
+            intention: dailyRow.intention,
+            firstPaymentDate: dailyRow.firstPaymentDate ? String(dailyRow.firstPaymentDate) : null,
+            hasZaloChat: Number(zalo?.relationCount ?? 0) > 0,
+            customerMessageCount: Number(zalo?.customerMessageCount ?? 0),
+            hasEnoughImages: hasImages,
+            inInspectionRegion: false,
+            hasInspectionBooking: false,
+            isInspected: false,
+            preInspectionBidCount: 0,
+            postInspectionBidCount: 0,
+          }),
+          day: String(dailyRow.day),
+          qualified: dailyRow.qualified ?? null,
+        };
+      }),
       winRows: winDailyRows.rows.map((winRow) => ({
         day: String(winRow.day),
         count: toNumber(winRow.count),
@@ -1324,6 +1343,7 @@ export async function GET(request: Request) {
         rows: dailyZaloCallRows,
       }),
       leadQualityByDay: dailyCharts.leadQualityByDay,
+      leadQualityError,
       winCasesByDay: dailyCharts.winCasesByDay,
       failureReasons: buildHanoiFailureReasonFunnels(failureReasons),
       delayReasons: buildHanoiDelayReasonChart(delayReasons),

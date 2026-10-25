@@ -243,6 +243,7 @@ export interface HanoiFunnelResponse {
   dailyHumanMessageMix: HanoiDailyHumanMessageMixPoint[];
   dailyZaloCalls: HanoiDailyZaloCallPoint[];
   leadQualityByDay: HanoiDailyLeadQualityPoint[];
+  leadQualityError?: string | null;
   winCasesByDay: HanoiDailyWinPoint[];
   failureReasons: HanoiFailureReasonFunnel[];
   delayReasons: HanoiDelayReasonChart;
