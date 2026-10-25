@@ -21,6 +21,7 @@ import {
   getQuoteTimestamps,
   hasVehicleImagesFromSources,
   isInInspectionRegion,
+  isSouthernLeadLocation,
   normalizeSaleLeadTeamFilter,
   resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
@@ -359,6 +360,7 @@ export async function GET(request: Request) {
     const noHumanTouchFilter = parseBooleanFilter(searchParams.get("noHumanTouch"));
     const underTwoBidsFilter = parseBooleanFilter(searchParams.get("underTwoBids"));
     const hotLeadFilter = parseBooleanFilter(searchParams.get("hotLead"));
+    const southernLeadFilter = parseBooleanFilter(searchParams.get("southernLead"));
     const needsInspectionBookingFilter = parseBooleanFilter(searchParams.get("needsInspectionBooking"));
     const needsPostInspectionQuoteFilter = parseBooleanFilter(searchParams.get("needsPostInspectionQuote"));
     const filterOrder = parseCsv(searchParams.get("filterOrder"));
@@ -697,6 +699,7 @@ export async function GET(request: Request) {
           year: row.year,
           mileage: row.mileage,
           location: row.location,
+          southernLead: isSouthernLeadLocation(row.location),
           plate: row.plate,
           sku: row.sku,
           createdAt: row.car_created_at ?? row.lead_created_at,
@@ -770,6 +773,7 @@ export async function GET(request: Request) {
       noHumanTouch: noHumanTouchFilter,
       underTwoBids: underTwoBidsFilter,
       hotLead: hotLeadFilter,
+      southernLead: southernLeadFilter,
       needsInspectionBooking: needsInspectionBookingFilter,
       needsPostInspectionQuote: needsPostInspectionQuoteFilter,
     };
@@ -801,6 +805,7 @@ export async function GET(request: Request) {
         noHumanTouch: noHumanTouchFilter,
         underTwoBids: underTwoBidsFilter,
         hotLead: hotLeadFilter,
+        southernLead: southernLeadFilter,
         needsInspectionBooking: needsInspectionBookingFilter,
         needsPostInspectionQuote: needsPostInspectionQuoteFilter,
         filterOrder,

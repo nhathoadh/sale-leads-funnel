@@ -56,6 +56,7 @@ export function normalizeSaleLeadTeamFilter(value: string | null | undefined): S
 }
 
 export interface SaleLeadFilterableRow {
+  southernLead?: boolean;
   workStage: SaleLeadWorkStage;
   gapBucket: SaleLeadGapBucket;
   hasImages: boolean;
@@ -68,6 +69,7 @@ export interface SaleLeadFilterableRow {
 }
 
 export interface SaleLeadListFilters {
+  southernLead?: boolean;
   stages?: SaleLeadWorkStage[];
   gaps?: SaleLeadGapBucket[];
   hasImages?: boolean;
@@ -81,6 +83,7 @@ export interface SaleLeadListFilters {
 }
 
 export interface SaleLeadFilterCounts {
+  southernLead: number;
   total: number;
   stages: Record<SaleLeadWorkStage, number>;
   gaps: Record<SaleLeadGapBucket, number>;
@@ -99,6 +102,7 @@ export interface SaleLeadFilterFacets {
   stages: Record<SaleLeadWorkStage, number>;
   gaps: Record<SaleLeadGapBucket, number>;
   status: {
+    southernLead: number;
     hasImages: number;
     noImages: number;
     inspected: number;
@@ -117,6 +121,7 @@ export interface SaleLeadFilterFacets {
 
 export type SaleLeadFilterGroup = "status" | "stage" | "gap";
 export type SaleLeadStatusFilterKey =
+  | "southernLead"
   | "hasImages"
   | "noImages"
   | "inspected"
@@ -749,6 +754,7 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
     const humanTouchOk = filters.noHumanTouch === undefined || row.noHumanTouch === filters.noHumanTouch;
     const underTwoBidsOk = filters.underTwoBids === undefined || row.underTwoBids === filters.underTwoBids;
     const hotLeadOk = filters.hotLead === undefined || row.hotLead === filters.hotLead;
+    const southernLeadOk = filters.southernLead === undefined || Boolean(row.southernLead) === filters.southernLead;
     const inspectionBookingOk =
       filters.needsInspectionBooking === undefined || row.needsInspectionBooking === filters.needsInspectionBooking;
     const postInspectionQuoteOk =
@@ -762,6 +768,7 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
       humanTouchOk &&
       underTwoBidsOk &&
       hotLeadOk &&
+      southernLeadOk &&
       inspectionBookingOk &&
       postInspectionQuoteOk
     );
@@ -777,6 +784,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
   let noHumanTouch = 0;
   let underTwoBids = 0;
   let hotLead = 0;
+  let southernLead = 0;
   let needsInspectionBooking = 0;
   let needsPostInspectionQuote = 0;
   for (const row of rows) {
@@ -787,6 +795,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     if (row.noHumanTouch) noHumanTouch += 1;
     if (row.underTwoBids) underTwoBids += 1;
     if (row.hotLead) hotLead += 1;
+    if (row.southernLead) southernLead += 1;
     if (row.needsInspectionBooking) needsInspectionBooking += 1;
     if (row.needsPostInspectionQuote) needsPostInspectionQuote += 1;
   }
@@ -801,6 +810,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     noHumanTouch,
     underTwoBids,
     hotLead,
+    southernLead,
     needsInspectionBooking,
     needsPostInspectionQuote,
   };
@@ -814,6 +824,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
     noHumanTouch: filters.noHumanTouch,
     underTwoBids: filters.underTwoBids,
     hotLead: filters.hotLead,
+    southernLead: filters.southernLead,
     needsInspectionBooking: filters.needsInspectionBooking,
     needsPostInspectionQuote: filters.needsPostInspectionQuote,
   });
@@ -831,6 +842,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
       noHumanTouch: allCounts.noHumanTouch,
       underTwoBids: allCounts.underTwoBids,
       hotLead: allCounts.hotLead,
+      southernLead: allCounts.southernLead,
       needsInspectionBooking: allCounts.needsInspectionBooking,
       needsPostInspectionQuote: allCounts.needsPostInspectionQuote,
     },
@@ -843,6 +855,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
 }
 
 const STATUS_FILTER_KEYS: SaleLeadStatusFilterKey[] = [
+  "southernLead",
   "hasImages",
   "noImages",
   "inspected",
@@ -962,6 +975,7 @@ export function getOrderedSaleLeadFilterFacets(
       noHumanTouch: statusCounts.noHumanTouch,
       underTwoBids: statusCounts.underTwoBids,
       hotLead: statusCounts.hotLead,
+      southernLead: statusCounts.southernLead,
       needsInspectionBooking: statusCounts.needsInspectionBooking,
       needsPostInspectionQuote: statusCounts.needsPostInspectionQuote,
     },
@@ -971,6 +985,16 @@ export function getOrderedSaleLeadFilterFacets(
       gaps: gapRows.length,
     },
   };
+}
+
+export function isSouthernLeadLocation(location: string | null | undefined): boolean {
+  const value = String(location ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9]+/g, " ");
+  return /\b(?:hcmc?|tphcm|ho\s*chi\s*minh|sai\s*gon|binh\s*duong|binh\s*phuoc|dong\s*nai|tay\s*ninh|ba\s*ria|vung\s*tau|long\s*an|tien\s*giang|ben\s*tre|tra\s*vinh|vinh\s*long|dong\s*thap|an\s*giang|kien\s*giang|can\s*tho|hau\s*giang|soc\s*trang|bac\s*lieu|ca\s*mau)\b/.test(value);
 }
 
 export function isInInspectionRegion(location: string | null | undefined): boolean {

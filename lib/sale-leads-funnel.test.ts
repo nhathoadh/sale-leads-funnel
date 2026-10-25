@@ -24,12 +24,51 @@ import {
   extractSaleTextQuoteEvents,
   hasQuotedAfter,
   hasVehicleImagesFromSources,
+  isSouthernLeadLocation,
   resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
   summarizeDealerBids,
   type SaleLeadClassifierInput,
   type SaleLeadFilterableRow,
 } from "@/lib/sale-leads-funnel";
+
+describe("southern lead status filter", () => {
+  it.each([
+    "TP.HCM", "HCMC", "Hồ Chí Minh", "HoChiMinh", "Sài Gòn",
+    "BinhDuong", "Bình Phước", "DongNai", "Tây Ninh", "Bà Rịa - Vũng Tàu",
+    "LongAn", "Tiền Giang", "Bến Tre", "Trà Vinh", "VinhLong", "Đồng Tháp",
+    "An Giang", "KienGiang", "Cần Thơ", "HauGiang", "Sóc Trăng", "Bạc Liêu", "CaMau",
+  ])("recognizes southern vehicle location %s", (location) => {
+    expect(isSouthernLeadLocation(location)).toBe(true);
+  });
+
+  it.each([null, "", "HaNoi", "Đà Nẵng", "Bình Định", "Lâm Đồng", "Quảng Trị", "Long Anh"])(
+    "does not classify unknown, northern or central location %s as southern",
+    (location) => expect(isSouthernLeadLocation(location)).toBe(false),
+  );
+
+  it("combines geography with other filters and includes it in ordered facet counts", () => {
+    const base = {
+      workStage: "need_quote", gapBucket: "lt5", hasImages: true, inspected: false,
+      noHumanTouch: false, underTwoBids: false, hotLead: false,
+      needsInspectionBooking: false, needsPostInspectionQuote: false,
+    } as const;
+    const rows = [
+      { ...base, southernLead: true },
+      { ...base, southernLead: false },
+      { ...base, southernLead: true, hasImages: false, workStage: "need_images" as const },
+    ];
+    expect(filterSaleLeadRows(rows, { southernLead: true, hasImages: true })).toEqual([rows[0]]);
+    expect(getSaleLeadFilterCounts(rows).southernLead).toBe(2);
+    expect(getSaleLeadFilterFacets(rows, { southernLead: true })).toMatchObject({
+      total: 2, stages: { need_quote: 1, need_images: 1 }, status: { southernLead: 2 },
+    });
+    expect(getOrderedSaleLeadFilterFacets(rows, {
+      filters: { southernLead: true, stages: ["need_quote"] },
+      order: ["status:southernLead", "stage:need_quote"],
+    })).toMatchObject({ total: 1, stages: { need_quote: 1, need_images: 1 }, status: { southernLead: 2 } });
+  });
+});
 
 describe("sale lead API query budget", () => {
   it("loads up to 3000 base rows before applying funnel classifiers", () => {
@@ -736,6 +775,7 @@ describe("sale lead list filters", () => {
       noHumanTouch: 2,
       underTwoBids: 2,
       hotLead: 2,
+      southernLead: 0,
       needsInspectionBooking: 1,
       needsPostInspectionQuote: 1,
     });

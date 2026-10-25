@@ -61,6 +61,7 @@ interface FunnelLead {
   picName: string;
   carName: string;
   location: string | null;
+  southernLead: boolean;
   createdAt: string;
   crmStage: string;
   workStage: SaleLeadWorkStage;
@@ -104,6 +105,7 @@ interface FunnelResponse {
     noHumanTouch?: boolean;
     underTwoBids?: boolean;
     hotLead?: boolean;
+    southernLead?: boolean;
     needsInspectionBooking?: boolean;
     needsPostInspectionQuote?: boolean;
     filterOrder: string[];
@@ -127,6 +129,7 @@ interface FunnelResponse {
     noHumanTouch: number;
     underTwoBids: number;
     hotLead: number;
+    southernLead: number;
     needsInspectionBooking: number;
     needsPostInspectionQuote: number;
   };
@@ -141,6 +144,7 @@ interface FunnelResponse {
       noHumanTouch: number;
       underTwoBids: number;
       hotLead: number;
+      southernLead: number;
       needsInspectionBooking: number;
       needsPostInspectionQuote: number;
     };
@@ -250,6 +254,7 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
 ];
 
 type StatusFilterKey =
+  | "southernLead"
   | "hasImages"
   | "noImages"
   | "inspected"
@@ -260,6 +265,7 @@ type StatusFilterKey =
   | "needsPostInspectionQuote";
 
 const STATUS_FILTER_KEYS: StatusFilterKey[] = [
+  "southernLead",
   "hasImages",
   "noImages",
   "inspected",
@@ -1342,6 +1348,7 @@ function FunnelClient() {
     const noHumanTouch = searchParams.get("noHumanTouch") === "true";
     const underTwoBids = searchParams.get("underTwoBids") === "true";
     const hotLead = searchParams.get("hotLead") === "true";
+    const southernLead = searchParams.get("southernLead") === "true";
     const needsInspectionBooking = searchParams.get("needsInspectionBooking") === "true";
     const needsPostInspectionQuote = searchParams.get("needsPostInspectionQuote") === "true";
     const filterOrder = searchParams.get("filterOrder")?.split(",").filter(Boolean) ?? [];
@@ -1361,6 +1368,7 @@ function FunnelClient() {
       noHumanTouch,
       underTwoBids,
       hotLead,
+      southernLead,
       needsInspectionBooking,
       needsPostInspectionQuote,
       filterOrder,
@@ -1444,6 +1452,8 @@ function FunnelClient() {
     else next.delete("underTwoBids");
     if (merged.hotLead) next.set("hotLead", "true");
     else next.delete("hotLead");
+    if (merged.southernLead) next.set("southernLead", "true");
+    else next.delete("southernLead");
     if (merged.needsInspectionBooking) next.set("needsInspectionBooking", "true");
     else next.delete("needsInspectionBooking");
     if (merged.needsPostInspectionQuote) next.set("needsPostInspectionQuote", "true");
@@ -1493,6 +1503,7 @@ function FunnelClient() {
     if (params.noHumanTouch) url.searchParams.set("noHumanTouch", "true");
     if (params.underTwoBids) url.searchParams.set("underTwoBids", "true");
     if (params.hotLead) url.searchParams.set("hotLead", "true");
+    if (params.southernLead) url.searchParams.set("southernLead", "true");
     if (params.needsInspectionBooking) url.searchParams.set("needsInspectionBooking", "true");
     if (params.needsPostInspectionQuote) url.searchParams.set("needsPostInspectionQuote", "true");
     setCsvParam(url.searchParams, "filterOrder", params.filterOrder);
@@ -1555,6 +1566,7 @@ function FunnelClient() {
     params.noHumanTouch,
     params.underTwoBids,
     params.hotLead,
+    params.southernLead,
     params.needsInspectionBooking,
     params.needsPostInspectionQuote,
     params.filterOrder.join(","),
@@ -1923,6 +1935,7 @@ function FunnelClient() {
                     !params.noHumanTouch &&
                     !params.underTwoBids &&
                     !params.hotLead &&
+                    !params.southernLead &&
                     !params.needsInspectionBooking &&
                     !params.needsPostInspectionQuote
                   }
@@ -1938,6 +1951,7 @@ function FunnelClient() {
                       noHumanTouch: false,
                       underTwoBids: false,
                       hotLead: false,
+                      southernLead: false,
                       needsInspectionBooking: false,
                       needsPostInspectionQuote: false,
                       filterOrder: [],
@@ -1949,6 +1963,14 @@ function FunnelClient() {
               <section className="space-y-1.5 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
                 <FilterTitle>Trạng thái</FilterTitle>
                 <div className="grid grid-cols-2 gap-1.5">
+                  <CountFilterButton
+                    active={params.southernLead}
+                    label="Lead miền Nam"
+                    count={data?.facets?.status.southernLead ?? data?.counts?.southernLead ?? 0}
+                    tone="teal"
+                    title="Vị trí xe thuộc Đông Nam Bộ hoặc Tây Nam Bộ, không phụ thuộc team sale."
+                    onClick={() => toggleStatus("southernLead")}
+                  />
                   <CountFilterButton
                     active={params.hasImages}
                     label="Có ảnh"
