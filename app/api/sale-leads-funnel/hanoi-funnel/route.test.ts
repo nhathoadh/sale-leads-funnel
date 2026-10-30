@@ -6,7 +6,6 @@ import { GET } from "./route";
 vi.mock("@/lib/db", () => ({
   vucarV2Query: vi.fn(),
   vucarZaloQuery: vi.fn().mockResolvedValue({ rows: [] }),
-  e2eQuery: vi.fn().mockResolvedValue({ rows: [] }),
 }));
 vi.mock("@/lib/dealer-service", () => ({ biddings: vi.fn() }));
 vi.mock("@/lib/sale-leads-funnel-snapshots", async (importOriginal) => ({

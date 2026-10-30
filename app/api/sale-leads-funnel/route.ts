@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { e2eQuery, vucarV2Query, vucarZaloQuery } from "@/lib/db";
+import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { biddings } from "@/lib/dealer-service";
 import {
   SALE_LEAD_STAGE_CONFIG,
@@ -26,7 +26,7 @@ import {
   resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
   summarizeDealerBids,
-  type AgentPricingEvents,
+  type SaleLeadDataWarning,
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
@@ -109,11 +109,6 @@ function normalizeTimestampArray(value: unknown) {
   }
   if (typeof value === "string") return [value];
   return [];
-}
-
-function extractAgentPricingEvents(atoms: unknown): AgentPricingEvents | null {
-  const parsed = parseJson(atoms);
-  return parsed?.agent_pricing_events ?? null;
 }
 
 function hoursSince(value: string | null) {
@@ -342,6 +337,397 @@ async function writeSnapshotCache(input: {
   }
 }
 
+type FunnelRowsInput = { from: string; to: string; team: string; picIds: string[] };
+type FunnelRowsResult = { scanned: number; allRows: any[]; picOptionRows: any[]; warnings: SaleLeadDataWarning[] };
+
+// Paging, sorting and filter clicks only reshape the same classified rows, so keep
+// them briefly per date range/team/PIC instead of re-running every query. The
+// cached promise also collapses concurrent identical requests into one load.
+const FUNNEL_ROWS_CACHE_TTL_MS = 60_000;
+const FUNNEL_ROWS_CACHE_MAX_ENTRIES = 20;
+const funnelRowsCache = new Map<string, { expiresAt: number; promise: Promise<FunnelRowsResult> }>();
+
+function cachedFunnelRows(input: FunnelRowsInput, options: { fresh: boolean }): Promise<FunnelRowsResult> {
+  const key = JSON.stringify([input.from, input.to, input.team, [...input.picIds].sort()]);
+  const now = Date.now();
+  const hit = funnelRowsCache.get(key);
+  if (!options.fresh && hit && hit.expiresAt > now) return hit.promise;
+
+  const promise = loadFunnelRows(input);
+  funnelRowsCache.delete(key);
+  funnelRowsCache.set(key, { expiresAt: now + FUNNEL_ROWS_CACHE_TTL_MS, promise });
+  promise.catch(() => {
+    if (funnelRowsCache.get(key)?.promise === promise) funnelRowsCache.delete(key);
+  });
+  for (const oldestKey of funnelRowsCache.keys()) {
+    if (funnelRowsCache.size <= FUNNEL_ROWS_CACHE_MAX_ENTRIES) break;
+    funnelRowsCache.delete(oldestKey);
+  }
+  return promise;
+}
+
+async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Promise<FunnelRowsResult> {
+  const queryParams: unknown[] = [from, to, team];
+  const teamCondition = `AND EXISTS (
+         SELECT 1
+         FROM team_members tm
+         JOIN teams t ON t.id = tm.team_id
+         WHERE tm.user_id = l.pic_id
+           AND t.name = $3
+       )`;
+  let picCondition = "";
+  if (picIds.length > 0) {
+    queryParams.push(picIds);
+    picCondition = `AND l.pic_id = ANY($${queryParams.length}::uuid[])`;
+  }
+  queryParams.push(MAX_BASE_ROWS);
+
+  const baseResult = await vucarV2Query(
+    `WITH latest_status AS (
+       SELECT DISTINCT ON (ss.car_id)
+         ss.*
+       FROM sale_status ss
+       ORDER BY ss.car_id, ss.updated_at DESC NULLS LAST, ss.created_at DESC NULLS LAST
+     )
+     SELECT
+       l.id::text AS lead_id,
+       l.name AS lead_name,
+       l.phone,
+       l.additional_phone,
+       l.created_at AS lead_created_at,
+       l.pic_id::text AS pic_id,
+       COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name) AS pic_name,
+       l.source,
+       c.id::text AS car_id,
+       c.brand,
+       c.model,
+       c.variant,
+       c.year,
+       c.mileage,
+       c.location,
+       c.plate,
+       c.sku,
+       c.additional_images,
+       c.created_at AS car_created_at,
+       ss.stage,
+       ss.price_customer,
+       ss.price_highest_bid,
+       lead_price_fallback.price_customer AS lead_price_customer_fallback,
+       lead_price_fallback.price_highest_bid AS lead_price_highest_bid_fallback,
+       ss.price_sold,
+       ss.first_payment_date,
+       ss.qualified,
+       ss.intention,
+       ss.negotiation_ability,
+       ss.is_hot_lead
+     FROM leads l
+     JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
+     LEFT JOIN latest_status ss ON ss.car_id = c.id
+     LEFT JOIN LATERAL (
+       SELECT
+         ss2.price_customer,
+         ss2.price_highest_bid
+       FROM cars c2
+       JOIN sale_status ss2 ON ss2.car_id = c2.id
+       WHERE c2.lead_id = l.id
+         AND c2.id <> c.id
+         AND COALESCE(c2.is_deleted, false) = false
+         AND (ss2.price_customer > 1000000 OR ss2.price_highest_bid > 1000000)
+       ORDER BY
+         CASE
+           WHEN ss2.price_customer > 1000000 AND ss2.price_highest_bid > 1000000 THEN 0
+           WHEN ss2.price_customer > 1000000 THEN 1
+           ELSE 2
+         END,
+         ss2.updated_at DESC NULLS LAST,
+         ss2.created_at DESC NULLS LAST
+       LIMIT 1
+     ) lead_price_fallback ON true
+     LEFT JOIN users u ON u.id = l.pic_id
+     LEFT JOIN sales s ON s.user_id = u.id
+     WHERE c.created_at >= $1::date
+       AND c.created_at < ($2::date + INTERVAL '1 day')
+       ${teamCondition}
+       ${picCondition}
+     ORDER BY c.created_at DESC
+     LIMIT $${queryParams.length}::int`,
+    queryParams,
+  );
+
+  const baseRows = baseResult.rows;
+  const picOptionRows =
+    picIds.length > 0
+      ? (
+          await vucarV2Query(
+            `SELECT DISTINCT
+               l.pic_id::text AS pic_id,
+               COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name, l.pic_id::text) AS pic_name
+             FROM leads l
+             JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
+             LEFT JOIN users u ON u.id = l.pic_id
+             LEFT JOIN sales s ON s.user_id = u.id
+             WHERE c.created_at >= $1::date
+               AND c.created_at < ($2::date + INTERVAL '1 day')
+               ${teamCondition}
+               AND l.pic_id IS NOT NULL`,
+            [from, to, team],
+          )
+        ).rows
+      : baseRows;
+  const carIds = baseRows.map((row: any) => row.car_id).filter(Boolean);
+  const phones = Array.from(new Set(baseRows.map((row: any) => row.phone).filter(Boolean)));
+  const warnings = new Set<SaleLeadDataWarning>();
+  const unavailable =
+    <T,>(warning: SaleLeadDataWarning, fallback: T) =>
+    (error: unknown) => {
+      console.warn(`[sale-leads-funnel] ${warning}:`, error instanceof Error ? error.message : error);
+      warnings.add(warning);
+      return fallback;
+    };
+
+  const [zaloResult, inspectionResult, bookingResult, summaryResult, groupedBids] = await Promise.all([
+    phones.length > 0
+      ? vucarZaloQuery(
+          `SELECT
+             lr.phone,
+             COUNT(DISTINCT lr.friend_id) AS relation_count,
+             COUNT(m.msg_id) AS message_count,
+             COUNT(m.msg_id) FILTER (WHERE m.is_self = false) AS customer_message_count,
+             COUNT(m.msg_id) FILTER (WHERE m.is_self = true) AS sale_message_count,
+             COUNT(m.msg_id) FILTER (WHERE m.is_self = true AND m.source = 'user') AS human_message_count,
+             COUNT(m.msg_id) FILTER (WHERE m.is_self = true AND m.source = 'bot') AS ai_message_count,
+             COUNT(m.msg_id) FILTER (
+               WHERE m.is_self = false
+                 AND m.content IS NOT NULL
+                 AND (
+                   m.msg_type = 'chat.photo'
+                   OR (
+                     m.content LIKE '{%'
+                     AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
+                     AND (
+                       (m.content LIKE '%"width"%' AND m.content LIKE '%"height"%')
+                       OR m.content LIKE '%https://photo-%'
+                       OR m.content LIKE '%https://photo.%'
+                       OR m.content LIKE '%zpc.zdn.vn%'
+                     )
+                   )
+                 )
+             ) AS customer_image_message_count,
+             MAX(m.created_at) AS last_message_at,
+             MAX(m.created_at) FILTER (WHERE m.is_self = false) AS last_customer_at,
+             MAX(m.created_at) FILTER (WHERE m.is_self = true) AS last_sale_at,
+             ARRAY_AGG(m.created_at ORDER BY m.created_at) FILTER (
+               WHERE m.is_self = true
+                 AND m.content IS NOT NULL
+                 AND m.content LIKE '{%'
+                 AND m.content LIKE '%sendBubbleMessage%'
+                 AND (m.content ILIKE '%Cuộc gọi%' OR m.content ILIKE '%Cuoc goi%')
+                 AND (
+                   m.content LIKE '%recommened.calltime%'
+                   OR m.content LIKE '%recommended.calltime%'
+                 )
+             ) AS sale_completed_call_ts,
+             JSONB_AGG(
+               JSONB_BUILD_OBJECT('created_at', m.created_at, 'content', m.content, 'source', m.source)
+               ORDER BY m.created_at
+             ) FILTER (
+               WHERE m.is_self = true
+                 AND m.content IS NOT NULL
+                 AND BTRIM(m.content) NOT LIKE '{%'
+                 AND m.content ~* '[0-9]'
+                 AND (
+                   m.content ~* '(tỷ|ty|tỉ|ti|tr|triệu|trieu)'
+                   OR m.content ~* '[0-9]{2,4}[[:space:]]*[-–][[:space:]]*[0-9]{2,4}'
+                   OR m.content ~* '(giá|gia|mức|muc|khung giá|khung gia)[[:space:]]+[0-9]{2,4}'
+                   OR m.content ~* '(tầm|tam|khoảng|khoang|quanh|được|duoc)[[:space:]]+[0-9]{2,4}'
+                 )
+                 AND m.content ~* '(giá|gia|trả|tra|mua|khách|khach|khoảng|khoang|tầm|tam|giao dịch|giao dich)'
+             ) AS sale_text_quote_messages
+           FROM leads_relation lr
+           LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
+           WHERE lr.phone = ANY($1::text[])
+           GROUP BY lr.phone`,
+          [phones],
+        ).catch(unavailable("zalo_unavailable", { rows: [] }))
+      : Promise.resolve({ rows: [] }),
+    carIds.length > 0
+      ? vucarV2Query(
+           `SELECT DISTINCT ON (i.car_id)
+             i.car_id::text AS car_id,
+             i.created_at AS inspected_at,
+             i.note IS NOT NULL AS inspected
+           FROM inspection i
+           WHERE i.car_id = ANY($1::uuid[])
+             AND i.note IS NOT NULL
+           ORDER BY i.car_id, i.created_at DESC`,
+          [carIds],
+        ).catch(unavailable("inspection_unavailable", { rows: [] }))
+      : Promise.resolve({ rows: [] }),
+    carIds.length > 0
+      ? vucarV2Query(
+          `SELECT car_id, MIN(time) AS booked_at
+           FROM bookings
+           WHERE car_id = ANY($1::text[])
+             AND booking_type = 'inspection'
+           GROUP BY car_id`,
+          [carIds],
+        ).catch(unavailable("booking_unavailable", { rows: [] }))
+      : Promise.resolve({ rows: [] }),
+    carIds.length > 0
+      ? vucarV2Query(
+          `SELECT DISTINCT ON (c.id)
+             c.id::text AS car_id,
+             sp.result
+           FROM cars c
+           JOIN leads l ON l.id = c.lead_id
+           JOIN chat_summary cs ON cs.lead_id = l.id
+           JOIN summary_properties sp ON sp.summary_id = cs.id
+           WHERE c.id = ANY($1::uuid[])
+           ORDER BY c.id, sp.created_at DESC`,
+          [carIds],
+        ).catch(unavailable("chat_summary_unavailable", { rows: [] }))
+      : Promise.resolve({ rows: [] }),
+    carIds.length > 0
+      ? biddings.listByCarsGrouped(carIds).catch(unavailable("dealer_bids_unavailable", {}))
+      : Promise.resolve({}),
+  ]);
+
+  const zaloByPhone = new Map(zaloResult.rows.map((row: any) => [row.phone, row]));
+  const inspectionByCar = new Map(inspectionResult.rows.map((row: any) => [row.car_id, row]));
+  const bookingByCar = new Map(bookingResult.rows.map((row: any) => [row.car_id, row]));
+  const summaryByCar = new Map(summaryResult.rows.map((row: any) => [row.car_id, row.result]));
+
+  const allRows = baseRows
+    .map((row: any) => {
+      const snapshots = snapshotsFromResult(summaryByCar.get(row.car_id));
+      const latest = latestSnapshot(summaryByCar.get(row.car_id));
+      const bid = summarizeDealerBids((groupedBids as Record<string, any[]>)[row.car_id]);
+      const fallbackHighestBid = resolveSaleLeadHighestBid(
+        row.price_highest_bid,
+        bid.highestBid,
+        row.lead_price_highest_bid_fallback,
+      );
+      const zalo = row.phone ? zaloByPhone.get(row.phone) : null;
+      const relationCount = Number(zalo?.relation_count ?? 0);
+      const customerMessageCount = Number(zalo?.customer_message_count ?? 0);
+      const humanMessageCount = Number(zalo?.human_message_count ?? 0);
+      const aiMessageCount = Number(zalo?.ai_message_count ?? 0);
+      const customerZaloImageCount = Number(zalo?.customer_image_message_count ?? 0);
+      const inspected = inspectionByCar.has(row.car_id);
+      const booked = bookingByCar.has(row.car_id);
+      const priceCustomer = resolveSaleLeadCustomerPrice(
+        row.price_customer,
+        latest?.price_customer,
+        row.lead_price_customer_fallback,
+      );
+      const hasCustomerAndDealerPrice = Boolean(priceCustomer && fallbackHighestBid);
+      const dealerBidDealerCount = Number(bid.validDealerBidDealerCount ?? 0);
+      const noHumanTouch = relationCount > 0 && humanMessageCount <= 0;
+      const underTwoBids = hasCustomerAndDealerPrice && dealerBidDealerCount > 0 && dealerBidDealerCount < 2;
+      const hotLead = row.is_hot_lead === true;
+      const saleTextQuoteEvents = extractSaleTextQuoteEvents(zalo?.sale_text_quote_messages);
+      const gapPercent = calculateGapPercent(priceCustomer, fallbackHighestBid);
+      const storedImageCount = countStoredVehicleImages(row.additional_images);
+      const summaryHadImage = latest?.had_car_image === true || latest?.had_image === true;
+      const hasImages = hasVehicleImagesFromSources({
+        additionalImages: row.additional_images,
+        customerZaloImageCount,
+        summaryHadImage,
+      });
+      const classifierInput = {
+        crmStage: row.stage,
+        firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
+        intention: row.intention,
+        hasZaloChat: relationCount > 0,
+        customerMessageCount,
+        hasEnoughImages: hasImages,
+        inInspectionRegion: isInInspectionRegion(row.location ?? latest?.location),
+        hasInspectionBooking: booked,
+        isInspected: inspected,
+        latestInspectionAt: inspectionByCar.get(row.car_id)?.inspected_at
+          ? String(inspectionByCar.get(row.car_id)?.inspected_at)
+          : null,
+        highestBid: fallbackHighestBid,
+        preInspectionBidCount: bid.preInspectionBidCount,
+        postInspectionBidCount: bid.postInspectionBidCount,
+        latestPreInspectionBidAt: bid.latestPreInspectionBidAt,
+        latestPostInspectionBidAt: bid.latestPostInspectionBidAt,
+        quoteTs: normalizeQuoteTsFromSnapshots(snapshots),
+        priceVucarOfferedAt: latest?.price_vucar_offered_at ?? null,
+        priceVucarOffered: numberOrNull(latest?.price_vucar_offered),
+        saleCompletedCallTs: normalizeTimestampArray(zalo?.sale_completed_call_ts),
+        saleTextQuoteTs: saleTextQuoteEvents.map((event) => event.at),
+        saleTextQuotePrices: saleTextQuoteEvents
+          .map((event) => event.price)
+          .filter((price): price is number => price !== null),
+      };
+      const workStage = classifySaleLeadStage(classifierInput);
+      if (!workStage) return null;
+      const actionFlags = getSaleLeadActionFlags(classifierInput);
+      const quoteTimestamps = getQuoteTimestamps(classifierInput);
+      const lastTouchAt = zalo?.last_message_at ? String(zalo.last_message_at) : null;
+
+      return {
+        leadId: row.lead_id,
+        carId: row.car_id,
+        leadName: row.lead_name || "Chưa có tên",
+        phone: row.phone,
+        picId: row.pic_id,
+        picName: row.pic_name || "Chưa rõ PIC",
+        source: row.source,
+        carName: [row.brand, row.model, row.variant, row.year].filter(Boolean).join(" ") || row.sku || row.car_id,
+        brand: row.brand,
+        model: row.model,
+        variant: row.variant,
+        year: row.year,
+        mileage: row.mileage,
+        location: row.location,
+        southernLead: isSouthernLeadLocation(row.location),
+        plate: row.plate,
+        sku: row.sku,
+        createdAt: row.car_created_at ?? row.lead_created_at,
+        crmStage: row.stage || "UNDEFINED",
+        qualified: row.qualified || "UNDEFINED_QUALIFIED",
+        firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
+        workStage,
+        priceCustomer,
+        highestBid: fallbackHighestBid,
+        highestDealerName: bid.highestDealerName,
+        gapAmount: priceCustomer && fallbackHighestBid ? Math.max(0, priceCustomer - fallbackHighestBid) : null,
+        gapPercent,
+        gapBucket: getGapBucket(priceCustomer, fallbackHighestBid),
+        inspected,
+        booked,
+        hasImages,
+        noHumanTouch,
+        underTwoBids,
+        hotLead,
+        needsInspectionBooking: actionFlags.needsInspectionBooking,
+        needsPostInspectionQuote: actionFlags.needsPostInspectionQuote,
+        humanMessageCount,
+        aiMessageCount,
+        dealerBidDealerCount,
+        lastTouchAt,
+        lastTouchHours: hoursSince(lastTouchAt),
+        lastSaleAt: zalo?.last_sale_at ? String(zalo.last_sale_at) : null,
+        lastCustomerAt: zalo?.last_customer_at ? String(zalo.last_customer_at) : null,
+        latestPreInspectionBidAt: bid.latestPreInspectionBidAt,
+        latestPostInspectionBidAt: bid.latestPostInspectionBidAt,
+        quoteTimestamps,
+        imageCount: storedImageCount + customerZaloImageCount,
+        priceCustomerLabel: formatMillionShort(priceCustomer),
+        highestBidLabel: formatMillionShort(fallbackHighestBid),
+        gapLabel:
+          priceCustomer && fallbackHighestBid
+            ? `${formatMillionShort(Math.max(0, priceCustomer - fallbackHighestBid))} · ${gapPercent?.toFixed(1) ?? "?"}%`
+            : "—",
+      };
+    })
+    .filter(Boolean) as any[];
+
+  return { scanned: baseRows.length, allRows, picOptionRows, warnings: Array.from(warnings) };
+}
+
 export async function GET(request: Request) {
   try {
     const searchParams = new URL(request.url).searchParams;
@@ -371,376 +757,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Unauthorized snapshot cache write" }, { status: 401 });
     }
 
-    const queryParams: unknown[] = [from, to, team];
-    const teamCondition = `AND EXISTS (
-           SELECT 1
-           FROM team_members tm
-           JOIN teams t ON t.id = tm.team_id
-           WHERE tm.user_id = l.pic_id
-             AND t.name = $3
-         )`;
-    let picCondition = "";
-    if (picIds.length > 0) {
-      queryParams.push(picIds);
-      picCondition = `AND l.pic_id = ANY($${queryParams.length}::uuid[])`;
-    }
-    queryParams.push(MAX_BASE_ROWS);
-
-    const baseResult = await vucarV2Query(
-      `WITH latest_status AS (
-         SELECT DISTINCT ON (ss.car_id)
-           ss.*
-         FROM sale_status ss
-         ORDER BY ss.car_id, ss.updated_at DESC NULLS LAST, ss.created_at DESC NULLS LAST
-       )
-       SELECT
-         l.id::text AS lead_id,
-         l.name AS lead_name,
-         l.phone,
-         l.additional_phone,
-         l.created_at AS lead_created_at,
-         l.pic_id::text AS pic_id,
-         COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name) AS pic_name,
-         l.source,
-         c.id::text AS car_id,
-         c.brand,
-         c.model,
-         c.variant,
-         c.year,
-         c.mileage,
-         c.location,
-         c.plate,
-         c.sku,
-         c.additional_images,
-         c.created_at AS car_created_at,
-         ss.stage,
-         ss.price_customer,
-         ss.price_highest_bid,
-         lead_price_fallback.price_customer AS lead_price_customer_fallback,
-         lead_price_fallback.price_highest_bid AS lead_price_highest_bid_fallback,
-         ss.price_sold,
-         ss.first_payment_date,
-         ss.qualified,
-         ss.intention,
-         ss.negotiation_ability,
-         ss.is_hot_lead
-       FROM leads l
-       JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
-       LEFT JOIN latest_status ss ON ss.car_id = c.id
-       LEFT JOIN LATERAL (
-         SELECT
-           ss2.price_customer,
-           ss2.price_highest_bid
-         FROM cars c2
-         JOIN sale_status ss2 ON ss2.car_id = c2.id
-         WHERE c2.lead_id = l.id
-           AND c2.id <> c.id
-           AND COALESCE(c2.is_deleted, false) = false
-           AND (ss2.price_customer > 1000000 OR ss2.price_highest_bid > 1000000)
-         ORDER BY
-           CASE
-             WHEN ss2.price_customer > 1000000 AND ss2.price_highest_bid > 1000000 THEN 0
-             WHEN ss2.price_customer > 1000000 THEN 1
-             ELSE 2
-           END,
-           ss2.updated_at DESC NULLS LAST,
-           ss2.created_at DESC NULLS LAST
-         LIMIT 1
-       ) lead_price_fallback ON true
-       LEFT JOIN users u ON u.id = l.pic_id
-       LEFT JOIN sales s ON s.user_id = u.id
-       WHERE c.created_at >= $1::date
-         AND c.created_at < ($2::date + INTERVAL '1 day')
-         ${teamCondition}
-         ${picCondition}
-       ORDER BY c.created_at DESC
-       LIMIT $${queryParams.length}::int`,
-      queryParams,
+    const { scanned, allRows, picOptionRows, warnings } = await cachedFunnelRows(
+      { from, to, team, picIds },
+      { fresh: shouldCacheSnapshots || searchParams.get("fresh") === "1" },
     );
-
-    const baseRows = baseResult.rows;
-    const picOptionRows =
-      picIds.length > 0
-        ? (
-            await vucarV2Query(
-              `SELECT DISTINCT
-                 l.pic_id::text AS pic_id,
-                 COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name, l.pic_id::text) AS pic_name
-               FROM leads l
-               JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
-               LEFT JOIN users u ON u.id = l.pic_id
-               LEFT JOIN sales s ON s.user_id = u.id
-               WHERE c.created_at >= $1::date
-                 AND c.created_at < ($2::date + INTERVAL '1 day')
-                 ${teamCondition}
-                 AND l.pic_id IS NOT NULL`,
-              [from, to, team],
-            )
-          ).rows
-        : baseRows;
-    const carIds = baseRows.map((row: any) => row.car_id).filter(Boolean);
-    const phones = Array.from(new Set(baseRows.map((row: any) => row.phone).filter(Boolean)));
-    let zaloUnavailable = false;
-
-    const [zaloResult, inspectionResult, bookingResult, summaryResult, signalResult, groupedBids] = await Promise.all([
-      phones.length > 0
-        ? vucarZaloQuery(
-            `SELECT
-               lr.phone,
-               COUNT(DISTINCT lr.friend_id) AS relation_count,
-               COUNT(m.msg_id) AS message_count,
-               COUNT(m.msg_id) FILTER (WHERE m.is_self = false) AS customer_message_count,
-               COUNT(m.msg_id) FILTER (WHERE m.is_self = true) AS sale_message_count,
-               COUNT(m.msg_id) FILTER (WHERE m.is_self = true AND m.source = 'user') AS human_message_count,
-               COUNT(m.msg_id) FILTER (WHERE m.is_self = true AND m.source = 'bot') AS ai_message_count,
-               COUNT(m.msg_id) FILTER (
-                 WHERE m.is_self = false
-                   AND m.content IS NOT NULL
-                   AND (
-                     m.msg_type = 'chat.photo'
-                     OR (
-                       m.content LIKE '{%'
-                       AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
-                       AND (
-                         (m.content LIKE '%"width"%' AND m.content LIKE '%"height"%')
-                         OR m.content LIKE '%https://photo-%'
-                         OR m.content LIKE '%https://photo.%'
-                         OR m.content LIKE '%zpc.zdn.vn%'
-                       )
-                     )
-                   )
-               ) AS customer_image_message_count,
-               MAX(m.created_at) AS last_message_at,
-               MAX(m.created_at) FILTER (WHERE m.is_self = false) AS last_customer_at,
-               MAX(m.created_at) FILTER (WHERE m.is_self = true) AS last_sale_at,
-               ARRAY_AGG(m.created_at ORDER BY m.created_at) FILTER (
-                 WHERE m.is_self = true
-                   AND m.content IS NOT NULL
-                   AND m.content LIKE '{%'
-                   AND m.content LIKE '%sendBubbleMessage%'
-                   AND (m.content ILIKE '%Cuộc gọi%' OR m.content ILIKE '%Cuoc goi%')
-                   AND (
-                     m.content LIKE '%recommened.calltime%'
-                     OR m.content LIKE '%recommended.calltime%'
-                   )
-               ) AS sale_completed_call_ts,
-               JSONB_AGG(
-                 JSONB_BUILD_OBJECT('created_at', m.created_at, 'content', m.content)
-                 ORDER BY m.created_at
-               ) FILTER (
-                 WHERE m.is_self = true
-                   AND m.content IS NOT NULL
-                   AND BTRIM(m.content) NOT LIKE '{%'
-                   AND m.content ~* '[0-9]'
-                   AND (
-                     m.content ~* '(tỷ|ty|tỉ|ti|tr|triệu|trieu)'
-                     OR m.content ~* '[0-9]{2,4}[[:space:]]*[-–][[:space:]]*[0-9]{2,4}'
-                     OR m.content ~* '(giá|gia|mức|muc|khung giá|khung gia)[[:space:]]+[0-9]{2,4}'
-                     OR m.content ~* '(tầm|tam|khoảng|khoang|quanh|được|duoc)[[:space:]]+[0-9]{2,4}'
-                   )
-                   AND m.content ~* '(giá|gia|trả|tra|mua|khách|khach|khoảng|khoang|tầm|tam|giao dịch|giao dich)'
-               ) AS sale_text_quote_messages
-             FROM leads_relation lr
-             LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
-             WHERE lr.phone = ANY($1::text[])
-             GROUP BY lr.phone`,
-            [phones],
-          ).catch((error) => {
-            console.warn("[sale-leads-funnel] Zalo stats unavailable:", error instanceof Error ? error.message : error);
-            zaloUnavailable = true;
-            return { rows: [] };
-          })
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
-        ? vucarV2Query(
-             `SELECT DISTINCT ON (i.car_id)
-               i.car_id::text AS car_id,
-               i.created_at AS inspected_at,
-               i.note IS NOT NULL AS inspected
-             FROM inspection i
-             WHERE i.car_id = ANY($1::uuid[])
-               AND i.note IS NOT NULL
-             ORDER BY i.car_id, i.created_at DESC`,
-            [carIds],
-          ).catch(() => ({ rows: [] }))
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
-        ? vucarV2Query(
-            `SELECT car_id, MIN(time) AS booked_at
-             FROM bookings
-             WHERE car_id = ANY($1::text[])
-               AND booking_type = 'inspection'
-             GROUP BY car_id`,
-            [carIds],
-          ).catch(() => ({ rows: [] }))
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
-        ? vucarV2Query(
-            `SELECT DISTINCT ON (c.id)
-               c.id::text AS car_id,
-               sp.result
-             FROM cars c
-             JOIN leads l ON l.id = c.lead_id
-             JOIN chat_summary cs ON cs.lead_id = l.id
-             JOIN summary_properties sp ON sp.summary_id = cs.id
-             WHERE c.id = ANY($1::uuid[])
-             ORDER BY c.id, sp.created_at DESC`,
-            [carIds],
-          ).catch(() => ({ rows: [] }))
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
-        ? e2eQuery(
-             `SELECT DISTINCT ON (car_id)
-               car_id::text AS car_id,
-               atoms
-             FROM agent_signal_snapshots
-             WHERE car_id = ANY($1::text[])
-             ORDER BY car_id, created_at DESC`,
-            [carIds],
-          ).catch(() => ({ rows: [] }))
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
-        ? biddings.listByCarsGrouped(carIds).catch((error) => {
-            console.warn("[sale-leads-funnel] Dealer bids unavailable:", error instanceof Error ? error.message : error);
-            return {};
-          })
-        : Promise.resolve({}),
-    ]);
-
-    const zaloByPhone = new Map(zaloResult.rows.map((row: any) => [row.phone, row]));
-    const inspectionByCar = new Map(inspectionResult.rows.map((row: any) => [row.car_id, row]));
-    const bookingByCar = new Map(bookingResult.rows.map((row: any) => [row.car_id, row]));
-    const summaryByCar = new Map(summaryResult.rows.map((row: any) => [row.car_id, row.result]));
-    const signalByCar = new Map(signalResult.rows.map((row: any) => [row.car_id, row.atoms]));
-
-    const allRows = baseRows
-      .map((row: any) => {
-        const snapshots = snapshotsFromResult(summaryByCar.get(row.car_id));
-        const latest = latestSnapshot(summaryByCar.get(row.car_id));
-        const bid = summarizeDealerBids((groupedBids as Record<string, any[]>)[row.car_id]);
-        const fallbackHighestBid = resolveSaleLeadHighestBid(
-          row.price_highest_bid,
-          bid.highestBid,
-          row.lead_price_highest_bid_fallback,
-        );
-        const zalo = row.phone ? zaloByPhone.get(row.phone) : null;
-        const relationCount = Number(zalo?.relation_count ?? 0);
-        const customerMessageCount = Number(zalo?.customer_message_count ?? 0);
-        const humanMessageCount = Number(zalo?.human_message_count ?? 0);
-        const aiMessageCount = Number(zalo?.ai_message_count ?? 0);
-        const customerZaloImageCount = Number(zalo?.customer_image_message_count ?? 0);
-        const inspected = inspectionByCar.has(row.car_id);
-        const booked = bookingByCar.has(row.car_id);
-        const priceCustomer = resolveSaleLeadCustomerPrice(
-          row.price_customer,
-          latest?.price_customer,
-          row.lead_price_customer_fallback,
-        );
-        const hasCustomerAndDealerPrice = Boolean(priceCustomer && fallbackHighestBid);
-        const dealerBidDealerCount = Number(bid.validDealerBidDealerCount ?? 0);
-        const noHumanTouch = relationCount > 0 && humanMessageCount <= 0;
-        const underTwoBids = hasCustomerAndDealerPrice && dealerBidDealerCount > 0 && dealerBidDealerCount < 2;
-        const hotLead = row.is_hot_lead === true;
-        const saleTextQuoteEvents = extractSaleTextQuoteEvents(zalo?.sale_text_quote_messages);
-        const gapPercent = calculateGapPercent(priceCustomer, fallbackHighestBid);
-        const storedImageCount = countStoredVehicleImages(row.additional_images);
-        const summaryHadImage = latest?.had_car_image === true || latest?.had_image === true;
-        const hasImages = hasVehicleImagesFromSources({
-          additionalImages: row.additional_images,
-          customerZaloImageCount,
-          summaryHadImage,
-        });
-        const classifierInput = {
-          crmStage: row.stage,
-          firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
-          intention: row.intention,
-          hasZaloChat: relationCount > 0,
-          customerMessageCount,
-          hasEnoughImages: hasImages,
-          inInspectionRegion: isInInspectionRegion(row.location ?? latest?.location),
-          hasInspectionBooking: booked,
-          isInspected: inspected,
-          latestInspectionAt: inspectionByCar.get(row.car_id)?.inspected_at
-            ? String(inspectionByCar.get(row.car_id)?.inspected_at)
-            : null,
-          highestBid: fallbackHighestBid,
-          preInspectionBidCount: bid.preInspectionBidCount,
-          postInspectionBidCount: bid.postInspectionBidCount,
-          latestPreInspectionBidAt: bid.latestPreInspectionBidAt,
-          latestPostInspectionBidAt: bid.latestPostInspectionBidAt,
-          quoteTs: normalizeQuoteTsFromSnapshots(snapshots),
-          priceVucarOfferedAt: latest?.price_vucar_offered_at ?? null,
-          priceVucarOffered: numberOrNull(latest?.price_vucar_offered),
-          agentPricingEvents: extractAgentPricingEvents(signalByCar.get(row.car_id)),
-          saleCompletedCallTs: normalizeTimestampArray(zalo?.sale_completed_call_ts),
-          saleTextQuoteTs: saleTextQuoteEvents.map((event) => event.at),
-          saleTextQuotePrices: saleTextQuoteEvents
-            .map((event) => event.price)
-            .filter((price): price is number => price !== null),
-        };
-        const workStage = classifySaleLeadStage(classifierInput);
-        if (!workStage) return null;
-        const actionFlags = getSaleLeadActionFlags(classifierInput);
-        const quoteTimestamps = getQuoteTimestamps(classifierInput);
-        const lastTouchAt = zalo?.last_message_at ? String(zalo.last_message_at) : null;
-
-        return {
-          leadId: row.lead_id,
-          carId: row.car_id,
-          leadName: row.lead_name || "Chưa có tên",
-          phone: row.phone,
-          picId: row.pic_id,
-          picName: row.pic_name || "Chưa rõ PIC",
-          source: row.source,
-          carName: [row.brand, row.model, row.variant, row.year].filter(Boolean).join(" ") || row.sku || row.car_id,
-          brand: row.brand,
-          model: row.model,
-          variant: row.variant,
-          year: row.year,
-          mileage: row.mileage,
-          location: row.location,
-          southernLead: isSouthernLeadLocation(row.location),
-          plate: row.plate,
-          sku: row.sku,
-          createdAt: row.car_created_at ?? row.lead_created_at,
-          crmStage: row.stage || "UNDEFINED",
-          qualified: row.qualified || "UNDEFINED_QUALIFIED",
-          firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
-          workStage,
-          priceCustomer,
-          highestBid: fallbackHighestBid,
-          highestDealerName: bid.highestDealerName,
-          gapAmount: priceCustomer && fallbackHighestBid ? Math.max(0, priceCustomer - fallbackHighestBid) : null,
-          gapPercent,
-          gapBucket: getGapBucket(priceCustomer, fallbackHighestBid),
-          inspected,
-          booked,
-          hasImages,
-          noHumanTouch,
-          underTwoBids,
-          hotLead,
-          needsInspectionBooking: actionFlags.needsInspectionBooking,
-          needsPostInspectionQuote: actionFlags.needsPostInspectionQuote,
-          humanMessageCount,
-          aiMessageCount,
-          dealerBidDealerCount,
-          lastTouchAt,
-          lastTouchHours: hoursSince(lastTouchAt),
-          lastSaleAt: zalo?.last_sale_at ? String(zalo.last_sale_at) : null,
-          lastCustomerAt: zalo?.last_customer_at ? String(zalo.last_customer_at) : null,
-          latestPreInspectionBidAt: bid.latestPreInspectionBidAt,
-          latestPostInspectionBidAt: bid.latestPostInspectionBidAt,
-          quoteTimestamps,
-          imageCount: storedImageCount + customerZaloImageCount,
-          priceCustomerLabel: formatMillionShort(priceCustomer),
-          highestBidLabel: formatMillionShort(fallbackHighestBid),
-          gapLabel:
-            priceCustomer && fallbackHighestBid
-              ? `${formatMillionShort(Math.max(0, priceCustomer - fallbackHighestBid))} · ${gapPercent?.toFixed(1) ?? "?"}%`
-              : "—",
-        };
-      })
-      .filter(Boolean) as any[];
 
     const counts = getSaleLeadFilterCounts(allRows);
     const stageSummary = buildSaleLeadStageSummary(counts);
@@ -756,8 +776,8 @@ export async function GET(request: Request) {
           team,
           pic: picIds,
         },
-        scanned: baseRows.length,
-        warnings: zaloUnavailable ? ["zalo_unavailable"] : [],
+        scanned,
+        warnings,
         snapshotCache,
         stageSummary,
         workableGapSummary,
@@ -814,11 +834,11 @@ export async function GET(request: Request) {
         perPage,
       },
       total,
-      scanned: baseRows.length,
+      scanned,
       page,
       perPage,
       totalPages: Math.max(1, Math.ceil(total / perPage)),
-      warnings: zaloUnavailable ? ["zalo_unavailable"] : [],
+      warnings,
       snapshotCache,
       counts,
       stageSummary,

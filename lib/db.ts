@@ -1,14 +1,29 @@
 import { Pool, type PoolConfig } from "pg";
 
-const globalForDb = globalThis as unknown as {
-  vucarV2Pool: Pool | undefined;
-  e2ePool: Pool | undefined;
-  vucarZaloPool: Pool | undefined;
-};
-
 type Env = Record<string, string | undefined>;
+
+// One read-only connection URL per datasource. Names match the Vucar vault
+// (Infisical project vucar-data-pool), so values can be copied verbatim.
+export const DATASOURCES = {
+  vucarV2: { label: "VuCar V2", envKey: "VUCAR_V2_READ_DATABASE_URL" },
+  vucarZalo: { label: "VuCar Zalo", envKey: "VUCAR_ZALO_READ_DATABASE_URL" },
+} as const;
+
+type DatasourceKey = keyof typeof DATASOURCES;
+
 const RETRYABLE_DB_ERROR_CODES = new Set(["40001"]);
 const MAX_DB_QUERY_ATTEMPTS = 3;
+const CONNECTION_ERROR_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EHOSTUNREACH", "28P01"]);
+// After a connection-level failure, skip the datasource for this long instead of
+// paying the DNS/connect timeout on every request.
+const UNAVAILABLE_COOLDOWN_MS = 60_000;
+
+const globalForDb = globalThis as unknown as {
+  dbPools: Partial<Record<DatasourceKey, Pool>> | undefined;
+  dbUnavailable: Partial<Record<DatasourceKey, { until: number; message: string }>> | undefined;
+};
+const pools = (globalForDb.dbPools ??= {});
+const unavailable = (globalForDb.dbUnavailable ??= {});
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,97 +35,72 @@ export function shouldRetryDbQuery(error: unknown) {
   return RETRYABLE_DB_ERROR_CODES.has(code) || message.includes("conflict with recovery");
 }
 
-function sslConfigFromEnv(env: Env, ...envKeys: string[]): false | { rejectUnauthorized: false } {
-  if (envKeys.some((key) => env[key] === "false" || env[key] === "true")) return false;
-  return { rejectUnauthorized: false };
+export function isConnectionError(error: unknown) {
+  const code = typeof (error as any)?.code === "string" ? (error as any).code : "";
+  const message = typeof (error as any)?.message === "string" ? (error as any).message.toLowerCase() : "";
+  return (
+    CONNECTION_ERROR_CODES.has(code) ||
+    message.includes("timeout exceeded when trying to connect") ||
+    message.includes("connection terminated due to connection timeout")
+  );
 }
 
-function splitPoolConfig(env: Env, prefix: string, sslKey: string): PoolConfig {
+export class DatasourceUnavailableError extends Error {
+  constructor(label: string, reason: string) {
+    super(`${label} unavailable: ${reason}`);
+    this.name = "DatasourceUnavailableError";
+  }
+}
+
+/**
+ * pg lets `sslmode` in the URL override the `ssl` option, and `sslmode=require`
+ * there means full certificate verification. Strip it and decide SSL here:
+ * `sslmode=disable` turns SSL off (local DBs), anything else is encrypted
+ * without certificate verification, as before.
+ */
+export function buildPoolConfig(connectionString: string): PoolConfig {
+  const url = new URL(connectionString);
+  const sslDisabled = url.searchParams.get("sslmode") === "disable";
+  url.searchParams.delete("sslmode");
   return {
-    host: env[`${prefix}_HOST`],
-    port: parseInt(env[`${prefix}_PORT`] || "5432"),
-    database: env[`${prefix}_NAME`],
-    user: env[`${prefix}_USER`],
-    password: env[`${prefix}_PASSWORD`],
-    ssl: sslConfigFromEnv(env, sslKey),
+    connectionString: url.toString(),
+    ssl: sslDisabled ? false : { rejectUnauthorized: false },
     max: 15,
     idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 20000,
+    connectionTimeoutMillis: 10000,
   };
 }
 
-function urlPoolConfig(env: Env, connectionString: string, sslKeys: string[]): PoolConfig {
-  return {
-    connectionString,
-    ssl: sslConfigFromEnv(env, ...sslKeys),
-    max: 15,
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 20000,
-  };
+export function resolveDatasourceUrl(key: DatasourceKey, env: Env = process.env) {
+  const { label, envKey } = DATASOURCES[key];
+  const value = env[envKey]?.trim();
+  if (!value) throw new DatasourceUnavailableError(label, `${envKey} is not set`);
+  return value;
 }
 
-export function buildVucarV2PoolConfig(env: Env = process.env): PoolConfig {
-  if (env.VUCAR_V2_DATABASE_URL) {
-    return urlPoolConfig(env, env.VUCAR_V2_DATABASE_URL, ["VUCAR_V2_DB_SSL_DISABLED"]);
-  }
-  return splitPoolConfig(env, "VUCAR_V2_DB", "VUCAR_V2_DB_SSL_DISABLED");
-}
-
-export function buildE2ePoolConfig(env: Env = process.env): PoolConfig {
-  if (env.E2E_DATABASE_URL) {
-    return urlPoolConfig(env, env.E2E_DATABASE_URL, ["E2E_DB_SSL_DISABLED"]);
-  }
-  return splitPoolConfig(env, "E2E_DB", "E2E_DB_SSL_DISABLED");
-}
-
-export function buildVucarZaloPoolConfig(env: Env = process.env): PoolConfig {
-  const connectionString =
-    env.ZALO_READ_REPLICA_DATABASE_URL ||
-    env.ZALO_DATABASE_URL ||
-    env.ZALO_CONNECTION_STRING;
-
-  if (connectionString) {
-    return urlPoolConfig(env, connectionString, ["ZALO_READ_REPLICA_SSL_DISABLED", "ZALO_DB_SSL_DISABLED"]);
-  }
-
-  return splitPoolConfig(env, "ZALO_DB", "ZALO_DB_SSL_DISABLED");
-}
-
-function getVucarV2Pool(): Pool {
-  if (!globalForDb.vucarV2Pool) {
-    globalForDb.vucarV2Pool = new Pool(buildVucarV2PoolConfig());
-    globalForDb.vucarV2Pool.on("error", (err) => {
-      console.error("Unexpected error on idle VuCar V2 client", err);
+function getPool(key: DatasourceKey): Pool {
+  let pool = pools[key];
+  if (!pool) {
+    pool = new Pool(buildPoolConfig(resolveDatasourceUrl(key)));
+    pool.on("error", (err) => {
+      console.error(`Unexpected error on idle ${DATASOURCES[key].label} client`, err);
     });
+    pools[key] = pool;
   }
-  return globalForDb.vucarV2Pool;
+  return pool;
 }
 
-function getE2ePool(): Pool {
-  if (!globalForDb.e2ePool) {
-    globalForDb.e2ePool = new Pool(buildE2ePoolConfig());
-    globalForDb.e2ePool.on("error", (err) => {
-      console.error("Unexpected error on idle E2E client", err);
-    });
-  }
-  return globalForDb.e2ePool;
-}
+async function timedQuery(key: DatasourceKey, text: string, params?: unknown[]) {
+  const { label } = DATASOURCES[key];
+  const down = unavailable[key];
+  if (down && down.until > Date.now()) throw new DatasourceUnavailableError(label, down.message);
 
-export function getVucarZaloPool(): Pool {
-  if (!globalForDb.vucarZaloPool) {
-    globalForDb.vucarZaloPool = new Pool(buildVucarZaloPoolConfig());
-    globalForDb.vucarZaloPool.on("error", (err) => {
-      console.error("Unexpected error on idle VuCar Zalo client", err);
-    });
-  }
-  return globalForDb.vucarZaloPool;
-}
-
-async function timedQuery(pool: Pool, label: string, text: string, params?: unknown[]) {
+  const pool = getPool(key);
   const start = Date.now();
   for (let attempt = 1; attempt <= MAX_DB_QUERY_ATTEMPTS; attempt++) {
     try {
       const res = await pool.query(text, params);
+      delete unavailable[key];
       const duration = Date.now() - start;
       if (duration > 500) {
         console.warn(`Slow ${label} query detected:`, {
@@ -131,6 +121,12 @@ async function timedQuery(pool: Pool, label: string, text: string, params?: unkn
         await sleep(250 * attempt);
         continue;
       }
+      if (isConnectionError(error)) {
+        const message = (error as any)?.message ?? String(error);
+        unavailable[key] = { until: Date.now() + UNAVAILABLE_COOLDOWN_MS, message };
+        console.error(`${label} unreachable, skipping it for ${UNAVAILABLE_COOLDOWN_MS / 1000}s:`, message);
+        throw new DatasourceUnavailableError(label, message);
+      }
       console.error(`${label.toLowerCase()} query error`, { text, error });
       throw error;
     }
@@ -139,13 +135,9 @@ async function timedQuery(pool: Pool, label: string, text: string, params?: unkn
 }
 
 export async function vucarV2Query(text: string, params?: unknown[]) {
-  return timedQuery(getVucarV2Pool(), "VuCar V2", text, params);
-}
-
-export async function e2eQuery(text: string, params?: unknown[]) {
-  return timedQuery(getE2ePool(), "E2E", text, params);
+  return timedQuery("vucarV2", text, params);
 }
 
 export async function vucarZaloQuery(text: string, params?: unknown[]) {
-  return timedQuery(getVucarZaloPool(), "VuCar Zalo", text, params);
+  return timedQuery("vucarZalo", text, params);
 }

@@ -10,7 +10,7 @@ Standalone daily operations dashboard for sales teams to review, filter, and pri
 npm install
 ```
 
-2. Create `.env.local` from `.env.example` and fill the datasource values.
+2. Create `.env.local` from `.env.example`. The database URLs come from the Vucar vault (Infisical project `vucar-data-pool`, env `prod`): copy `VUCAR_V2_READ_DATABASE_URL` and `VUCAR_ZALO_READ_DATABASE_URL` verbatim. Set the same variables on Vercel for deployed builds.
 
 3. Start the app:
 
@@ -23,8 +23,7 @@ Open `http://localhost:3000/sale-leads-funnel`.
 ## Datasources
 
 - VuCar V2 database: leads, cars, sale status, bookings, inspections, sale activities.
-- E2E signal database: agent signal snapshots.
-- Zalo read database: phone-to-thread mapping and messages.
+- Zalo read database: phone-to-thread mapping and messages. Quotes are detected from outbound messages; AI agent messages (`source = 'bot'`) use stricter rules (`isAgentTextQuote`) so fee notes, conditional offers and echoes of the customer's own price are not counted.
 - Dealer service HTTP API: dealer bids.
 
 The project is standalone and does not import files from the Vucar E2E repository.

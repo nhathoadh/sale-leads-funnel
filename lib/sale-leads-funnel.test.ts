@@ -24,6 +24,7 @@ import {
   extractSaleTextQuoteEvents,
   hasQuotedAfter,
   hasVehicleImagesFromSources,
+  isAgentTextQuote,
   isSouthernLeadLocation,
   resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
@@ -140,7 +141,6 @@ function lead(overrides: Partial<SaleLeadClassifierInput> = {}): SaleLeadClassif
     quoteTs: [],
     priceVucarOfferedAt: null,
     priceVucarOffered: null,
-    agentPricingEvents: null,
   saleCompletedCallTs: [],
   saleTextQuoteTs: [],
     saleTextQuotePrices: [],
@@ -159,21 +159,9 @@ describe("getQuoteTimestamps", () => {
     expect(getQuoteTimestamps(lead({ crmStage: "COMPLETED", quoteTs: [] }))).toEqual([]);
   });
 
-  it("falls back to summary and agent pricing event timestamps", () => {
-    expect(
-      getQuoteTimestamps(
-        lead({
-          priceVucarOfferedAt: "2026-09-01T05:00:00.000Z",
-          agentPricingEvents: {
-            vo_at: "2026-09-01T06:00:00.000Z",
-            events: [{ type: "T_agent_vucar_offer_subsequent", at: "2026-09-01T07:00:00.000Z" }],
-          },
-        }),
-      ),
-    ).toEqual([
+  it("falls back to the summary offer timestamp", () => {
+    expect(getQuoteTimestamps(lead({ priceVucarOfferedAt: "2026-09-01T05:00:00.000Z" }))).toEqual([
       "2026-09-01T05:00:00.000Z",
-      "2026-09-01T06:00:00.000Z",
-      "2026-09-01T07:00:00.000Z",
     ]);
   });
 
@@ -248,6 +236,32 @@ describe("extractSaleTextQuoteTimestamps", () => {
   });
 });
 
+describe("isAgentTextQuote", () => {
+  it.each([
+    "Dạ anh, bên mua vừa chào xe mình 420 triệu ạ",
+    "Đã hỏi lại 6 bên mà chưa bên nào nâng, mức cao nhất bên mua đang chào là 460, tính trên ảnh xe",
+    "Hiện có 2 bên chào giá, các bên đang chào tập trung quanh 230-235 triệu, cao nhất là 235 triệu",
+    "Vừa có 1 bên mua chào 1,1 tỷ cho xe anh, mấy bên còn lại em đang hỏi thêm",
+    "Dạ anh, em vừa nhận phản hồi mới từ bên mua: xe mình đang được báo 90 triệu ạ",
+    "Mức 700 triệu là mức bên mua trả thật cho xe mình, cũng đúng tầm anh mong muốn",
+  ])("counts a buyer offer the agent reports: %s", (content) => {
+    expect(isAgentTextQuote(content)).toBe(true);
+  });
+
+  it.each([
+    "Mức 550tr anh nêu em vẫn giữ, nhưng nếu anh cân nhắc được quanh 500 thì em sẽ thử đẩy thêm 5-10 triệu",
+    "Em hiểu mức anh mong thu về là 550 triệu, hiện bên mua chưa lên tới mức đó",
+    "Dạ em chưa có mức 450 để báo anh ạ, bên mua chưa có phản hồi mới",
+    "13-14 bên đã nhận tin mà mới có 2 bên vào giá, hiện chưa bên nào trả gần 375",
+    "Dạ em gửi mình mức phí dịch vụ bên em ạ: 1% trên giá bán thành công. Với mức giá anh mong muốn 250 triệu thì phí khoảng 2,5 triệu",
+    "Dạ anh Thang, cách đây 2 tuần bên em chốt một chiếc Ranger số sàn 2019, bên mua trả 310 triệu ạ",
+    "Mấy mẫu Spark Lite Van 2015 đang rao quanh 70-75 triệu, nhưng đó là giá rao chứ chưa phải giá chốt",
+    "Dạ em là nhân viên từ Vucar. Em đang có 2-3 người mua sẵn quan tâm dòng này ạ",
+  ])("ignores echoes, conditions, fees and references: %s", (content) => {
+    expect(isAgentTextQuote(content)).toBe(false);
+  });
+});
+
 describe("extractSaleTextQuoteEvents", () => {
   it("extracts quote prices in millions from outbound Zalo text", () => {
     expect(
@@ -270,6 +284,42 @@ describe("extractSaleTextQuoteEvents", () => {
         },
       ]),
     ).toEqual([{ at: "2026-09-15T06:20:31.403Z", price: 300_000_000 }]);
+  });
+});
+
+describe("extractSaleTextQuoteEvents for agent messages", () => {
+  it("uses the agent rules and only the offered price for bot messages", () => {
+    expect(
+      extractSaleTextQuoteEvents([
+        {
+          created_at: "2026-10-20T03:00:00.000Z",
+          source: "bot",
+          content: "Mức 700 anh muốn, còn mức bên mua đang chào cho xe này là 550 triệu",
+        },
+        {
+          created_at: "2026-10-21T03:00:00.000Z",
+          source: "bot",
+          content: "Nếu anh cân nhắc được mức gần 600 thì em sẽ thử đẩy thêm 5-10 triệu với bên mua",
+        },
+      ]),
+    ).toEqual([{ at: "2026-10-20T03:00:00.000Z", price: 550_000_000 }]);
+  });
+
+  it("keeps the existing rules for human sale messages", () => {
+    expect(
+      extractSaleTextQuoteEvents([
+        { created_at: "2026-10-20T03:00:00.000Z", source: "user", content: "dạ khách đang cứng giá 640tr" },
+      ]),
+    ).toEqual([{ at: "2026-10-20T03:00:00.000Z", price: 640_000_000 }]);
+  });
+
+  it("reads billion prices written with a decimal or a million tail", () => {
+    expect(
+      extractSaleTextQuoteEvents([
+        { created_at: "2026-10-20T03:00:00.000Z", source: "bot", content: "Vừa có 1 bên mua chào 1,1 tỷ cho xe anh" },
+        { created_at: "2026-10-21T03:00:00.000Z", source: "bot", content: "Bên mua vừa nâng lên 1 tỷ 250 cho xe mình ạ" },
+      ]).map((event) => event.price),
+    ).toEqual([1_100_000_000, 1_250_000_000]);
   });
 });
 

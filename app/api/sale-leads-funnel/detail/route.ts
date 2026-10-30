@@ -7,6 +7,7 @@ import {
   formatMillionShort,
   resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
+  type SaleLeadDataWarning,
 } from "@/lib/sale-leads-funnel";
 import {
   buildSaleLeadExternalLinks,
@@ -130,6 +131,14 @@ export async function GET(request: Request) {
     if (result.rows.length === 0) return NextResponse.json({ error: "Lead not found" }, { status: 404 });
 
     const row = result.rows[0];
+    const warnings = new Set<SaleLeadDataWarning>();
+    const unavailable =
+      <T,>(warning: SaleLeadDataWarning, fallback: T) =>
+      (error: unknown) => {
+        console.warn(`[sale-leads-funnel/detail] ${warning}:`, error instanceof Error ? error.message : error);
+        warnings.add(warning);
+        return fallback;
+      };
     const [
       rawBids,
       latestBids,
@@ -139,8 +148,8 @@ export async function GET(request: Request) {
       saleWorkspaceResult,
       relatedCarsResult,
     ] = await Promise.all([
-      biddings.listByCar(carId).catch(() => []),
-      biddings.listLatestPerDealer(carId).catch(() => []),
+      biddings.listByCar(carId).catch(unavailable("dealer_bids_unavailable", [])),
+      biddings.listLatestPerDealer(carId).catch(unavailable("dealer_bids_unavailable", [])),
       row.phone ? fetchZaloMessagesFromDb({ phone: String(row.phone), limit: 120 }) : Promise.resolve([]),
       vucarV2Query(
          `SELECT
@@ -153,7 +162,7 @@ export async function GET(request: Request) {
          ORDER BY created_at DESC
          LIMIT 40`,
         [row.lead_id],
-      ).catch(() => ({ rows: [] })),
+      ).catch(unavailable("sale_activities_unavailable", { rows: [] })),
       row.phone
         ? vucarZaloQuery(
             `SELECT account_id::text AS account_id, friend_id::text AS friend_id
@@ -161,7 +170,7 @@ export async function GET(request: Request) {
              WHERE phone = $1
              LIMIT 1`,
             [String(row.phone)],
-          ).catch(() => ({ rows: [] }))
+          ).catch(unavailable("zalo_unavailable", { rows: [] }))
         : Promise.resolve({ rows: [] }),
       row.phone
         ? vucarV2Query(
@@ -173,7 +182,7 @@ export async function GET(request: Request) {
              ORDER BY timestamp DESC
              LIMIT 1`,
             [String(row.phone)],
-          ).catch(() => ({ rows: [] }))
+          ).catch(unavailable("sale_workspace_unavailable", { rows: [] }))
         : Promise.resolve({ rows: [] }),
       vucarV2Query(
         `WITH latest_status AS (
@@ -195,7 +204,7 @@ export async function GET(request: Request) {
            AND COALESCE(c.is_deleted, false) = false
          ORDER BY c.created_at DESC`,
         [row.lead_id],
-      ).catch(() => ({ rows: [] })),
+      ).catch(unavailable("related_cars_unavailable", { rows: [] })),
     ]);
 
     const dealerNames = new Map(latestBids.map((bid: any) => [bid.dealer_id, bid.dealer_name]));
@@ -299,6 +308,7 @@ export async function GET(request: Request) {
       saleActivities: activitiesResult.rows,
       messages,
       externalLinks,
+      warnings: Array.from(warnings),
     });
   } catch (error) {
     console.error("[sale-leads-funnel/detail] Error:", error);

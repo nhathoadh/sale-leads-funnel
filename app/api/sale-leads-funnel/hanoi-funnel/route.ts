@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { e2eQuery, vucarV2Query, vucarZaloQuery } from "@/lib/db";
+import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { biddings } from "@/lib/dealer-service";
 import {
   LEAD_FAILED_SPEED_EXCLUDED_REASONS,
@@ -127,20 +127,6 @@ function getQuoteTimesFromSummary(value: unknown): unknown[] {
   return timestamps;
 }
 
-function getQuoteTimesFromAgentSignals(value: unknown): unknown[] {
-  const parsed = parseJsonValue(value);
-  const timestamps: unknown[] = [];
-  const agentPricingEvents = parsed?.agent_pricing_events;
-  if (agentPricingEvents?.vo_at) timestamps.push(agentPricingEvents.vo_at);
-  for (const event of agentPricingEvents?.events ?? []) {
-    const type = String(event?.type ?? "").toUpperCase();
-    if (type === "T_AGENT_FIRST_VUCAR_OFFER" || type === "T_AGENT_VUCAR_OFFER_SUBSEQUENT") {
-      timestamps.push(event?.at);
-    }
-  }
-  return timestamps;
-}
-
 function teamMembershipCondition(teamParamIndex: number): string {
   return `UPPER(t.name) = UPPER($${teamParamIndex}::text)`;
 }
@@ -259,7 +245,7 @@ async function readDetailedSaleCyclePeriod(input: {
     const carIds = baseRows.map((row: any) => row.car_id).filter(Boolean);
     const phones = Array.from(new Set(baseRows.map((row: any) => row.phone).filter(Boolean)));
 
-    const [statusResult, summaryResult, zaloResult, signalResult, dealerGrouped] = await Promise.all([
+    const [statusResult, summaryResult, zaloResult, dealerGrouped] = await Promise.all([
       carIds.length > 0
         ? vucarV2Query(
             `
@@ -333,7 +319,7 @@ async function readDetailedSaleCyclePeriod(input: {
                     )
                 ) AS sale_completed_call_ts,
                 JSONB_AGG(
-                  JSONB_BUILD_OBJECT('created_at', m.created_at, 'content', m.content)
+                  JSONB_BUILD_OBJECT('created_at', m.created_at, 'content', m.content, 'source', m.source)
                   ORDER BY m.created_at
                 ) FILTER (
                   WHERE m.is_self = true
@@ -360,22 +346,6 @@ async function readDetailedSaleCyclePeriod(input: {
           })
         : Promise.resolve({ rows: [] }),
       carIds.length > 0
-        ? e2eQuery(
-            `
-              SELECT DISTINCT ON (car_id)
-                car_id::text AS car_id,
-                atoms
-              FROM agent_signal_snapshots
-              WHERE car_id = ANY($1::text[])
-              ORDER BY car_id, created_at DESC
-            `,
-            [carIds],
-          ).catch((error) => {
-            console.warn("[hanoi-funnel] detailed sale cycle signals unavailable:", error instanceof Error ? error.message : error);
-            return { rows: [] };
-          })
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
         ? biddings.listByCarsGrouped(carIds).catch((error) => {
             console.warn("[hanoi-funnel] detailed sale cycle dealer bids unavailable:", error instanceof Error ? error.message : error);
             return {};
@@ -385,7 +355,6 @@ async function readDetailedSaleCyclePeriod(input: {
 
     const statusByCar = new Map(statusResult.rows.map((row: any) => [row.car_id, row]));
     const summaryByCar = new Map(summaryResult.rows.map((row: any) => [row.car_id, row.result]));
-    const signalByCar = new Map(signalResult.rows.map((row: any) => [row.car_id, row.atoms]));
     const zaloByPhone = new Map(zaloResult.rows.map((row: any) => [row.phone, row]));
     const durations = new Map<HanoiDetailedSaleCycleMetricKey, number[]>(
       DETAILED_SALE_CYCLE_DEFINITIONS.map((definition) => [definition.key, []]),
@@ -425,7 +394,6 @@ async function readDetailedSaleCyclePeriod(input: {
           ...(Array.isArray(zalo?.sale_completed_call_ts) ? zalo.sale_completed_call_ts : []),
           ...textQuoteTimes,
           ...getQuoteTimesFromSummary(summaryByCar.get(row.car_id)),
-          ...getQuoteTimesFromAgentSignals(signalByCar.get(row.car_id)),
         ],
         firstBidAt ?? firstDealerOutreachAt ?? firstImageAt ?? leadAt,
       );

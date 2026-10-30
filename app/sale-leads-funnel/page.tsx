@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -21,12 +21,14 @@ import {
 } from "lucide-react";
 
 import {
+  SALE_LEAD_DATA_WARNING_LABELS,
   SALE_LEAD_STAGE_CONFIG,
   formatMillionShort,
   getSaleLeadDefaultDateRange,
   getSaleLeadQuickMonthOptions,
   getSaleLeadStageTone,
   normalizeSaleLeadTeamFilter,
+  type SaleLeadDataWarning,
   type SaleLeadGapBucket,
   type SaleLeadTeamFilter,
   type SaleLeadWorkStage,
@@ -118,7 +120,7 @@ interface FunnelResponse {
   page: number;
   perPage: number;
   totalPages: number;
-  warnings?: string[];
+  warnings?: SaleLeadDataWarning[];
   counts?: {
     total: number;
     stages: Record<SaleLeadWorkStage, number>;
@@ -236,6 +238,7 @@ interface LeadDetail {
     label: string;
     href: string;
   }>;
+  warnings?: SaleLeadDataWarning[];
 }
 
 const GAP_OPTIONS: Array<{ value: SaleLeadGapBucket; label: string }> = [
@@ -1312,6 +1315,9 @@ function FunnelClient() {
   const [data, setData] = useState<FunnelResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingProgress, setLoadingProgress] = useState(0);
+  // Only the load right after the refresh button bypasses the server row cache.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const consumedRefreshNonce = useRef(0);
   const [leadPicOptions, setLeadPicOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [hanoiData, setHanoiData] = useState<HanoiFunnelResponse | null>(null);
@@ -1511,6 +1517,10 @@ function FunnelClient() {
     if (params.needsInspectionBooking) url.searchParams.set("needsInspectionBooking", "true");
     if (params.needsPostInspectionQuote) url.searchParams.set("needsPostInspectionQuote", "true");
     setCsvParam(url.searchParams, "filterOrder", params.filterOrder);
+    if (refreshNonce !== consumedRefreshNonce.current) {
+      consumedRefreshNonce.current = refreshNonce;
+      url.searchParams.set("fresh", "1");
+    }
 
     fetch(url.toString(), { signal: controller.signal })
       .then(async (response) => {
@@ -1577,6 +1587,7 @@ function FunnelClient() {
     params.sort,
     params.page,
     params.tab,
+    refreshNonce,
   ]);
 
   useEffect(() => {
@@ -1829,7 +1840,7 @@ function FunnelClient() {
               <div className="text-sm font-semibold">Bộ lọc</div>
               <button
                 type="button"
-                onClick={() => updateParams({})}
+                onClick={() => setRefreshNonce((value) => value + 1)}
                 className="inline-flex size-7 items-center justify-center rounded-md border border-slate-200 text-slate-600 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-100"
                 aria-label="Tải lại"
                 title="Tải lại"
@@ -2085,9 +2096,11 @@ function FunnelClient() {
         </aside>
 
         <div className="min-w-0 space-y-4">
-          {data?.warnings?.includes("zalo_unavailable") && (
+          {data?.warnings && data.warnings.length > 0 && (
             <div className="border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              Không kết nối được dữ liệu Zalo trong lần tải này; nhóm stage dựa trên hội thoại có thể chưa chính xác.
+              Thiếu dữ liệu trong lần tải này:{" "}
+              {data.warnings.map((warning) => SALE_LEAD_DATA_WARNING_LABELS[warning] ?? warning).join(", ")}. Stage và
+              các bộ lọc dựa trên nguồn này có thể chưa chính xác.
             </div>
           )}
 
@@ -2280,6 +2293,11 @@ function FunnelClient() {
               </div>
             ) : detail ? (
               <div className="space-y-4 px-5 pb-6">
+                {detail.warnings && detail.warnings.length > 0 && (
+                  <div className="mt-4 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                    Thiếu dữ liệu: {detail.warnings.map((warning) => SALE_LEAD_DATA_WARNING_LABELS[warning] ?? warning).join(", ")}.
+                  </div>
+                )}
                 <section className="grid gap-2 border-b border-slate-200/80 py-4 sm:grid-cols-3">
                   <div className="rounded-lg border border-slate-200/80 bg-white px-3 py-2 shadow-sm shadow-slate-200/40">
                     <div className="text-[11px] font-medium text-slate-500">Giai đoạn phễu</div>

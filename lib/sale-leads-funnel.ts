@@ -14,6 +14,19 @@ export type SaleLeadWorkStage =
 export type SaleLeadGapBucket = "lt5" | "5_10" | "gt10" | "no_price";
 export type SaleLeadTeamFilter = "HANOI" | "HCM";
 
+// A datasource that failed during a load; the rows still render without it.
+export const SALE_LEAD_DATA_WARNING_LABELS = {
+  zalo_unavailable: "Zalo (hội thoại, last touch, ảnh qua chat)",
+  inspection_unavailable: "kiểm định",
+  booking_unavailable: "lịch hẹn kiểm định",
+  chat_summary_unavailable: "tóm tắt chat",
+  dealer_bids_unavailable: "giá dealer",
+  sale_activities_unavailable: "hoạt động sale",
+  sale_workspace_unavailable: "link sale workspace",
+  related_cars_unavailable: "các xe khác của lead",
+} as const;
+export type SaleLeadDataWarning = keyof typeof SALE_LEAD_DATA_WARNING_LABELS;
+
 export const DEFAULT_SALE_LEAD_TEAM_FILTER: SaleLeadTeamFilter = "HANOI";
 
 function formatDateInput(date: Date) {
@@ -131,17 +144,6 @@ export type SaleLeadStatusFilterKey =
   | "needsInspectionBooking"
   | "needsPostInspectionQuote";
 
-export interface AgentPricingEvent {
-  type?: string | null;
-  at?: string | null;
-}
-
-export interface AgentPricingEvents {
-  vo_at?: string | null;
-  vo_fired?: boolean | null;
-  events?: AgentPricingEvent[] | null;
-}
-
 export interface SaleLeadClassifierInput {
   crmStage?: string | null;
   firstPaymentDate?: string | null;
@@ -161,7 +163,6 @@ export interface SaleLeadClassifierInput {
   quoteTs?: string[] | null;
   priceVucarOfferedAt?: string | null;
   priceVucarOffered?: number | null;
-  agentPricingEvents?: AgentPricingEvents | null;
   saleCompletedCallTs?: string[] | null;
   saleTextQuoteTs?: string[] | null;
   saleTextQuotePrices?: number[] | null;
@@ -400,7 +401,6 @@ export function hasVehicleImagesFromSources(sources: SaleLeadVehicleImageSources
 
 const TERMINAL_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID"]);
 const SUCCESS_CRM_STAGES = new Set(["COMPLETED", "DEPOSIT_PAID"]);
-const OFFER_EVENT_TYPES = new Set(["T_AGENT_FIRST_VUCAR_OFFER", "T_AGENT_VUCAR_OFFER_SUBSEQUENT"]);
 
 function parseTimestamp(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -447,6 +447,46 @@ export function isSaleTextQuote(content: string | null | undefined) {
   return OUTBOUND_QUOTE_CONTEXT_RE.test(text) && (ABSOLUTE_CAR_PRICE_RE.test(text) || IMPLIED_MILLION_PRICE_RE.test(text));
 }
 
+// The AI agent (Zalo source = 'bot') writes long, polite messages that often mention the customer's own
+// price, fees, market listings or "no buyer has reached X yet". Only count a clause that reports what
+// buyers are actually offering for this car, with the price in the same clause.
+const AGENT_MESSAGE_SKIP_RE = /(?:chot|ban(?: that)?|co) (?:mot|1) (?:chiec|xe)|phi dich vu|1% tren gia/;
+const AGENT_CLAUSE_SPLIT_RE = /\.(?=\s|$)|[!?;:\n]|,(?!\d)|(?<!\d),|\s[-–]\s|\bnhung\b/;
+const AGENT_BUYER_OFFER_RE =
+  /(?:ben mua|cac ben|mot ben|\d+ ben|ben nao|dealer|ben thu mua|nguoi mua|khach mua|\bho\b)(?:\s+\S+){0,6}?\s+(?:chao|tra|vao|ra gia|ra muc|dua|nang|chot|len|nhan xe)\b|duoc (?:chao|tra|bao)\b|\b(?:cao|tot) nhat\b|\bmat bang\b(?! (?:xe )?(?:dang )?rao)/;
+const AGENT_NOT_AN_OFFER_RE =
+  /chua (?:co |thay |nhan duoc )?(?:ben|ai|muc|gia)(?:\s+\S+){0,2}? nao|khong (?:co )?ben nao|\bneu\b|khi nao|can nhac|mong muon|ky vong|(?:anh|chi|minh|a|c|ban|chu|co) (?:dang |van |da )?(?:mong|muon|neu|dua|giu|chot|buong|huong toi|xin|chia se)\b|gia rao|dang rao|rao ban|tham khao/;
+const AGENT_PRICE_RE =
+  /(?<![\d.,/])\d+(?:[.,]\d+)?\s*(?:ty|ti)\b(?:\s*\d{1,3}\b)?|(?<![\d.,/])(\d{2,4})\s*(?:tr|trieu)\b|(?<![\d.,/])(\d{2,3})(?![\d.,/])(?!\s*(?:km|nghin|k\b|%|ben|ngay|thang|nam|lan|phut|gio|nguoi|chiec|xe|so|doi|cho|\d)|\s*[-–]\s*\d+\s*(?:km|nghin|k\b|h\b|gio))/g;
+
+function agentClausePrices(clause: string) {
+  const prices: number[] = [];
+  for (const match of clause.matchAll(AGENT_PRICE_RE)) {
+    if (match[1] === undefined && match[2] === undefined) {
+      const decimalTy = /^(\d+)[.,](\d+)/.exec(match[0]);
+      if (decimalTy) prices.push(Math.round(Number(`${decimalTy[1]}.${decimalTy[2]}`) * 1_000) * 1_000_000);
+      else prices.push(...extractQuotePrices(match[0]));
+      continue;
+    }
+    const millions = Number(match[1] ?? match[2]);
+    if (Number.isFinite(millions) && millions >= 20) prices.push(millions * 1_000_000);
+  }
+  return prices;
+}
+
+function agentQuoteClauses(content: string | null | undefined) {
+  if (!content) return [];
+  const text = normalizeSearchText(content);
+  if (AGENT_MESSAGE_SKIP_RE.test(text)) return [];
+  return text
+    .split(AGENT_CLAUSE_SPLIT_RE)
+    .filter((clause) => AGENT_BUYER_OFFER_RE.test(clause) && !AGENT_NOT_AN_OFFER_RE.test(clause) && agentClausePrices(clause).length > 0);
+}
+
+export function isAgentTextQuote(content: string | null | undefined) {
+  return agentQuoteClauses(content).length > 0;
+}
+
 function tyTailToMillions(tail: string) {
   if (!tail) return 0;
   return Number(tail.padEnd(3, "0").slice(0, 3));
@@ -477,28 +517,34 @@ function extractQuotePrices(content: string | null | undefined) {
   return Array.from(prices).filter((price) => price > 1_000_000).sort((a, b) => a - b);
 }
 
-export function extractSaleTextQuoteEvents(
-  messages: Array<{ created_at?: string | Date | null; content?: string | null }> | null | undefined,
-) {
+export interface SaleTextQuoteMessage {
+  created_at?: string | Date | null;
+  content?: string | null;
+  /** Zalo messages.source: 'bot' is the AI agent, 'user' a human sale. */
+  source?: string | null;
+}
+
+export function extractSaleTextQuoteEvents(messages: SaleTextQuoteMessage[] | null | undefined) {
   const events: SaleTextQuoteEvent[] = [];
   const seen = new Set<string>();
 
   for (const message of messages ?? []) {
-    if (!isSaleTextQuote(message.content)) continue;
+    const fromAgent = message.source === "bot";
+    if (fromAgent ? !isAgentTextQuote(message.content) : !isSaleTextQuote(message.content)) continue;
     const rawTimestamp = message.created_at;
     const timestamp = rawTimestamp instanceof Date ? rawTimestamp.toISOString() : rawTimestamp ? String(rawTimestamp) : null;
     if (!timestamp || parseTimestamp(timestamp) === null || seen.has(timestamp)) continue;
     seen.add(timestamp);
-    const prices = extractQuotePrices(message.content);
+    const prices = fromAgent
+      ? agentQuoteClauses(message.content).flatMap(agentClausePrices)
+      : extractQuotePrices(message.content);
     events.push({ at: timestamp, price: prices.length > 0 ? Math.max(...prices) : null });
   }
 
   return events.sort((a, b) => (parseTimestamp(a.at) ?? 0) - (parseTimestamp(b.at) ?? 0));
 }
 
-export function extractSaleTextQuoteTimestamps(
-  messages: Array<{ created_at?: string | Date | null; content?: string | null }> | null | undefined,
-) {
+export function extractSaleTextQuoteTimestamps(messages: SaleTextQuoteMessage[] | null | undefined) {
   return extractSaleTextQuoteEvents(messages).map((event) => event.at);
 }
 
@@ -519,14 +565,6 @@ export function getQuoteTimestamps(input: SaleLeadClassifierInput): string[] {
   }
 
   addTimestamp(timestamps, seen, input.priceVucarOfferedAt);
-  addTimestamp(timestamps, seen, input.agentPricingEvents?.vo_at ?? null);
-
-  for (const event of input.agentPricingEvents?.events ?? []) {
-    const type = String(event.type ?? "").toUpperCase();
-    if (OFFER_EVENT_TYPES.has(type)) {
-      addTimestamp(timestamps, seen, event.at ?? null);
-    }
-  }
 
   return timestamps.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
 }
@@ -544,14 +582,6 @@ export function getTextQuoteTimestamps(input: SaleLeadClassifierInput): string[]
   }
 
   addTimestamp(timestamps, seen, input.priceVucarOfferedAt);
-  addTimestamp(timestamps, seen, input.agentPricingEvents?.vo_at ?? null);
-
-  for (const event of input.agentPricingEvents?.events ?? []) {
-    const type = String(event.type ?? "").toUpperCase();
-    if (OFFER_EVENT_TYPES.has(type)) {
-      addTimestamp(timestamps, seen, event.at ?? null);
-    }
-  }
 
   return timestamps.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
 }
@@ -559,8 +589,7 @@ export function getTextQuoteTimestamps(input: SaleLeadClassifierInput): string[]
 export function hasQuoted(input: SaleLeadClassifierInput): boolean {
   return (
     getQuoteTimestamps(input).length > 0 ||
-    (input.priceVucarOffered !== null && input.priceVucarOffered !== undefined) ||
-    input.agentPricingEvents?.vo_fired === true
+    (input.priceVucarOffered !== null && input.priceVucarOffered !== undefined)
   );
 }
 
