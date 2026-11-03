@@ -25,11 +25,15 @@ import {
   normalizeSaleLeadTeamFilter,
   resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
+  pickInitialCustomerPrice,
   summarizeDealerBids,
+  summarizeInitialDealerBid,
+  type CustomerPriceHistoryEntry,
   type SaleLeadDataWarning,
   type SaleLeadGapBucket,
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
+import { buildGapStructureLead } from "@/lib/hanoi-funnel";
 import {
   CREATE_SALE_LEAD_FUNNEL_SNAPSHOT_TABLE_SQL,
   writeSaleLeadSnapshotFile,
@@ -692,6 +696,7 @@ async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Prom
         workStage,
         priceCustomer,
         highestBid: fallbackHighestBid,
+        initialHighestBid: summarizeInitialDealerBid((groupedBids as Record<string, any[]>)[row.car_id]),
         highestDealerName: bid.highestDealerName,
         gapAmount: priceCustomer && fallbackHighestBid ? Math.max(0, priceCustomer - fallbackHighestBid) : null,
         gapPercent,
@@ -726,6 +731,51 @@ async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Prom
     .filter(Boolean) as any[];
 
   return { scanned: baseRows.length, allRows, picOptionRows, warnings: Array.from(warnings) };
+}
+
+// Every priceCustomer change logged in CRM for these leads, oldest first.
+async function loadCustomerPriceHistory(leadIds: string[]): Promise<Map<string, CustomerPriceHistoryEntry[]>> {
+  const byLead = new Map<string, CustomerPriceHistoryEntry[]>();
+  if (leadIds.length === 0) return byLead;
+  const result = await vucarV2Query(
+    `SELECT
+       sa.lead_id::text AS lead_id,
+       sa.metadata->>'car_id' AS car_id,
+       sa.metadata->>'new_value' AS price,
+       sa.created_at
+     FROM sale_activities sa
+     WHERE sa.lead_id = ANY($1::uuid[])
+       AND sa.activity_type = 'STATUS_UPDATED'
+       AND sa.metadata->>'field_name' = 'priceCustomer'
+       AND sa.metadata->>'new_value' ~ '^[0-9]+(\\.[0-9]+)?$'
+     ORDER BY sa.created_at`,
+    [leadIds],
+  );
+  for (const row of result.rows) {
+    const list = byLead.get(row.lead_id) ?? [];
+    list.push({ carId: row.car_id || null, price: row.price, createdAt: row.created_at ? String(row.created_at) : null });
+    byLead.set(row.lead_id, list);
+  }
+  return byLead;
+}
+
+async function buildGapStructureLeads(rows: any[]) {
+  const imageRows = rows.filter((row) => row.hasImages);
+  const history = await loadCustomerPriceHistory(Array.from(new Set(imageRows.map((row) => String(row.leadId)))));
+  return imageRows.map((row) =>
+    buildGapStructureLead({
+      leadId: row.leadId,
+      carId: row.carId,
+      phone: row.phone ?? null,
+      carName: row.carName,
+      picName: row.picName,
+      workStage: row.workStage,
+      initialPriceCustomer: pickInitialCustomerPrice(history.get(String(row.leadId)) ?? [], row.carId),
+      initialHighestBid: row.initialHighestBid ?? null,
+      priceCustomer: row.priceCustomer ?? null,
+      highestBid: row.highestBid ?? null,
+    }),
+  );
 }
 
 export async function GET(request: Request) {
@@ -768,6 +818,20 @@ export async function GET(request: Request) {
     const snapshotCache = shouldCacheSnapshots
       ? await writeSnapshotCache({ rows: allRows, from, to, team, picIds })
       : null;
+    if (searchParams.get("summary") === "gap-structure") {
+      return NextResponse.json({
+        filters: {
+          from,
+          to,
+          team,
+          pic: picIds,
+        },
+        scanned,
+        warnings,
+        gapStructure: { leads: await buildGapStructureLeads(allRows) },
+      });
+    }
+
     if (searchParams.get("summary") === "stage") {
       return NextResponse.json({
         filters: {

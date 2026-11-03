@@ -28,7 +28,9 @@ import {
   isSouthernLeadLocation,
   resolveSaleLeadCustomerPrice,
   resolveSaleLeadHighestBid,
+  pickInitialCustomerPrice,
   summarizeDealerBids,
+  summarizeInitialDealerBid,
   type SaleLeadClassifierInput,
   type SaleLeadFilterableRow,
 } from "@/lib/sale-leads-funnel";
@@ -979,5 +981,39 @@ describe("sale lead list filters", () => {
         no_price: 0,
       },
     });
+  });
+});
+
+describe("initial gap inputs", () => {
+  it("takes the highest pre-inspection bid within 24h of the first bid", () => {
+    expect(
+      summarizeInitialDealerBid([
+        { price: 2_400_000_000, version: 1, created_at: "2026-10-28T03:01:00Z" },
+        { price: 2_550_000_000, version: 1, created_at: "2026-10-28T03:22:00Z" },
+        { price: 2_700_000_000, version: 1, created_at: "2026-10-30T03:22:00Z" },
+        { price: 2_900_000_000, version: 2, created_at: "2026-10-28T05:00:00Z" },
+        { price: 3_000_000_000, version: 1, created_at: "2026-10-28T04:00:00Z", is_interested: false },
+        { price: 1, version: 1, created_at: "2026-10-28T02:00:00Z" },
+      ]),
+    ).toBe(2_550_000_000);
+  });
+
+  it("returns null without a valid pre-inspection bid", () => {
+    expect(summarizeInitialDealerBid([{ price: 500_000_000, version: 2, created_at: "2026-10-28T03:01:00Z" }])).toBeNull();
+    expect(summarizeInitialDealerBid(undefined)).toBeNull();
+  });
+
+  it("uses the first customer price logged for the car or its lead", () => {
+    expect(
+      pickInitialCustomerPrice(
+        [
+          { carId: "car-b", price: "900000000", createdAt: "2026-10-27T01:00:00Z" },
+          { carId: null, price: "2950000000", createdAt: "2026-10-28T02:55:49Z" },
+          { carId: "car-a", price: "2700000000", createdAt: "2026-10-28T03:39:12Z" },
+        ],
+        "car-a",
+      ),
+    ).toBe(2_950_000_000);
+    expect(pickInitialCustomerPrice([], "car-a")).toBeNull();
   });
 });

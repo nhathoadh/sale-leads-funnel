@@ -1,3 +1,4 @@
+import { calculateGapPercent } from "@/lib/sale-leads-funnel";
 import type {
   SaleLeadGapBucket,
   SaleLeadStageSummary,
@@ -835,4 +836,157 @@ export function buildHanoiTargetFunnel(counts: {
     { key: "target_image", label: "co_anh_target", count: counts.targetLeadsWithImages },
     { key: "target_inspection", label: "kiem_dinh_target", count: counts.targetInspectionBookings },
   ]);
+}
+
+export type GapStructureStartKey = "lt5" | "5_10" | "10_20" | "gt20" | "no_price";
+export type GapStructureNowKey = GapStructureStartKey | "delayed" | "win" | "failed";
+
+export interface GapStructureLead {
+  leadId: string;
+  carId: string;
+  phone: string | null;
+  carName: string;
+  picName: string;
+  startKey: GapStructureStartKey;
+  nowKey: GapStructureNowKey;
+  startGapPercent: number | null;
+  nowGapPercent: number | null;
+  startPriceCustomer: number | null;
+  startHighestBid: number | null;
+  priceCustomer: number | null;
+  highestBid: number | null;
+}
+
+export interface GapStructureSlice {
+  key: GapStructureNowKey;
+  label: string;
+  color: string;
+  count: number;
+  percent: number;
+  leads: GapStructureLead[];
+}
+
+export interface GapStructureFlow {
+  from: GapStructureStartKey;
+  to: GapStructureNowKey;
+  count: number;
+  leads: GapStructureLead[];
+}
+
+export interface GapStructureView {
+  total: number;
+  start: GapStructureSlice[];
+  now: GapStructureSlice[];
+  flows: GapStructureFlow[];
+}
+
+export const GAP_STRUCTURE_LABELS: Record<GapStructureNowKey, string> = {
+  lt5: "Gap < 5%",
+  "5_10": "Gap 5–10%",
+  "10_20": "Gap 10–20%",
+  gt20: "Gap > 20%",
+  no_price: "Chưa đủ gap",
+  delayed: "Hoãn bán",
+  win: "Win",
+  failed: "Failed",
+};
+
+export const GAP_STRUCTURE_COLORS: Record<GapStructureNowKey, string> = {
+  lt5: "#38bdf8",
+  "5_10": "#2dd4bf",
+  "10_20": "#fbbf24",
+  gt20: "#fb923c",
+  no_price: "#94a3b8",
+  delayed: "#a78bfa",
+  win: "#16a34a",
+  failed: "#f43f5e",
+};
+
+const GAP_STRUCTURE_START_ORDER: GapStructureStartKey[] = ["lt5", "5_10", "10_20", "gt20", "no_price"];
+const GAP_STRUCTURE_NOW_ORDER: GapStructureNowKey[] = [...GAP_STRUCTURE_START_ORDER, "delayed", "win", "failed"];
+
+export function getGapStructureBucket(gapPercent: number | null | undefined): GapStructureStartKey {
+  if (gapPercent === null || gapPercent === undefined || !Number.isFinite(gapPercent)) return "no_price";
+  if (gapPercent < 5) return "lt5";
+  if (gapPercent <= 10) return "5_10";
+  if (gapPercent <= 20) return "10_20";
+  return "gt20";
+}
+
+export function buildGapStructureLead(input: {
+  leadId: string;
+  carId: string;
+  phone: string | null;
+  carName: string;
+  picName: string;
+  workStage: string;
+  initialPriceCustomer: number | null;
+  initialHighestBid: number | null;
+  priceCustomer: number | null;
+  highestBid: number | null;
+}): GapStructureLead {
+  const startPriceCustomer = input.initialPriceCustomer ?? input.priceCustomer;
+  const startGapPercent = calculateGapPercent(startPriceCustomer, input.initialHighestBid);
+  const nowGapPercent = calculateGapPercent(input.priceCustomer, input.highestBid);
+  const nowKey: GapStructureNowKey =
+    input.workStage === "success"
+      ? "win"
+      : input.workStage === "failed"
+        ? "failed"
+        : input.workStage === "delayed"
+          ? "delayed"
+          : getGapStructureBucket(nowGapPercent);
+
+  return {
+    leadId: input.leadId,
+    carId: input.carId,
+    phone: input.phone,
+    carName: input.carName,
+    picName: input.picName,
+    startKey: getGapStructureBucket(startGapPercent),
+    nowKey,
+    startGapPercent,
+    nowGapPercent,
+    startPriceCustomer,
+    startHighestBid: input.initialHighestBid,
+    priceCustomer: input.priceCustomer,
+    highestBid: input.highestBid,
+  };
+}
+
+function sortByGap(leads: GapStructureLead[], field: "startGapPercent" | "nowGapPercent") {
+  return leads.slice().sort((a, b) => (a[field] ?? Number.POSITIVE_INFINITY) - (b[field] ?? Number.POSITIVE_INFINITY));
+}
+
+export function buildGapStructureView(leads: GapStructureLead[]): GapStructureView {
+  const total = leads.length;
+  const slices = (order: GapStructureNowKey[], keyOf: (lead: GapStructureLead) => GapStructureNowKey, field: "startGapPercent" | "nowGapPercent") =>
+    order
+      .map((key) => {
+        const group = leads.filter((lead) => keyOf(lead) === key);
+        return {
+          key,
+          label: GAP_STRUCTURE_LABELS[key],
+          color: GAP_STRUCTURE_COLORS[key],
+          count: group.length,
+          percent: total > 0 ? Number(((group.length / total) * 100).toFixed(2)) : 0,
+          leads: sortByGap(group, field),
+        };
+      })
+      .filter((slice) => slice.count > 0);
+
+  const flows: GapStructureFlow[] = [];
+  for (const from of GAP_STRUCTURE_START_ORDER) {
+    for (const to of GAP_STRUCTURE_NOW_ORDER) {
+      const group = leads.filter((lead) => lead.startKey === from && lead.nowKey === to);
+      if (group.length > 0) flows.push({ from, to, count: group.length, leads: sortByGap(group, "startGapPercent") });
+    }
+  }
+
+  return {
+    total,
+    start: slices(GAP_STRUCTURE_START_ORDER, (lead) => lead.startKey, "startGapPercent"),
+    now: slices(GAP_STRUCTURE_NOW_ORDER, (lead) => lead.nowKey, "nowGapPercent"),
+    flows,
+  };
 }

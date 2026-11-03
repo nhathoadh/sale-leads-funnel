@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowDownUp,
@@ -35,6 +35,9 @@ import {
 } from "@/lib/sale-leads-funnel";
 import { formatCrmValue, groupDealerBidsByDealer, hasRealDealerBidPrice } from "@/lib/sale-leads-funnel-detail";
 import {
+  GAP_STRUCTURE_COLORS,
+  GAP_STRUCTURE_LABELS,
+  buildGapStructureView,
   buildHanoiSummaryCharts,
   buildHanoiWorkablePieGradient,
   buildHanoiWorkablePieSlices,
@@ -42,6 +45,9 @@ import {
   sortHanoiSaleRows,
   type HanoiSaleSortKey,
   type HanoiSortDirection,
+  type GapStructureLead,
+  type GapStructureSlice,
+  type GapStructureView,
   type HanoiFunnelResponse,
 } from "@/lib/hanoi-funnel";
 
@@ -618,6 +624,378 @@ function HanoiGapChart({
   );
 }
 
+type GapStructureFocus = { kind: "start" | "now" | "flow"; key: string };
+type GapStructureHover = GapStructureFocus & { x: number; y: number };
+
+const GAP_STRUCTURE_TOOLTIP_ROWS = 12;
+
+function formatGapStructurePercent(value: number | null) {
+  return value === null ? "chưa đủ gap" : `${value.toFixed(1).replace(".", ",")}%`;
+}
+
+function formatGapStructurePrices(customer: number | null, bid: number | null) {
+  return `${customer ? formatMillionShort(customer) : "?"} / ${bid ? formatMillionShort(bid) : "?"}`;
+}
+
+function gapStructureFocusLeads(view: GapStructureView, focus: GapStructureFocus | null) {
+  if (!focus) return null;
+  if (focus.kind === "flow") {
+    const flow = view.flows.find((item) => `${item.from}>${item.to}` === focus.key);
+    return flow
+      ? { title: `${GAP_STRUCTURE_LABELS[flow.from]} → ${GAP_STRUCTURE_LABELS[flow.to]}`, count: flow.count, percent: (flow.count / Math.max(1, view.total)) * 100, leads: flow.leads }
+      : null;
+  }
+  const slice = (focus.kind === "start" ? view.start : view.now).find((item) => item.key === focus.key);
+  return slice ? { title: `${focus.kind === "start" ? "Ban đầu" : "Hiện tại"} · ${slice.label}`, count: slice.count, percent: slice.percent, leads: slice.leads } : null;
+}
+
+function gapStructureLeadLine(lead: GapStructureLead, kind: GapStructureFocus["kind"]) {
+  if (kind === "start") {
+    return [lead.phone || "—", lead.carName, formatGapStructurePrices(lead.startPriceCustomer, lead.startHighestBid), formatGapStructurePercent(lead.startGapPercent)];
+  }
+  if (kind === "now") {
+    return [lead.phone || "—", lead.carName, formatGapStructurePrices(lead.priceCustomer, lead.highestBid), formatGapStructurePercent(lead.nowGapPercent)];
+  }
+  return [
+    lead.phone || "—",
+    lead.carName,
+    `${formatGapStructurePrices(lead.startPriceCustomer, lead.startHighestBid)} → ${formatGapStructurePrices(lead.priceCustomer, lead.highestBid)}`,
+    `${formatGapStructurePercent(lead.startGapPercent)} → ${formatGapStructurePercent(lead.nowGapPercent)}`,
+  ];
+}
+
+function gapStructureArcPath(cx: number, cy: number, r: number, start: number, end: number) {
+  if (end - start >= Math.PI * 2 - 1e-6) {
+    return `M${cx - r},${cy}a${r},${r} 0 1,0 ${r * 2},0a${r},${r} 0 1,0 ${-r * 2},0Z`;
+  }
+  const x0 = cx + r * Math.sin(start);
+  const y0 = cy - r * Math.cos(start);
+  const x1 = cx + r * Math.sin(end);
+  const y1 = cy - r * Math.cos(end);
+  return `M${cx},${cy}L${x0},${y0}A${r},${r} 0 ${end - start > Math.PI ? 1 : 0},1 ${x1},${y1}Z`;
+}
+
+function HanoiGapStructurePie({
+  title,
+  kind,
+  slices,
+  focus,
+  onHover,
+  onLeave,
+  onPin,
+}: {
+  title: string;
+  kind: "start" | "now";
+  slices: GapStructureSlice[];
+  focus: GapStructureFocus | null;
+  onHover: (focus: GapStructureFocus, event: ReactMouseEvent) => void;
+  onLeave: () => void;
+  onPin: (focus: GapStructureFocus) => void;
+}) {
+  const size = 200;
+  const r = size / 2 - 4;
+  let cursor = 0;
+  const arcs = slices.map((slice) => {
+    const start = cursor;
+    cursor += (slice.percent / 100) * Math.PI * 2;
+    return { slice, start, end: cursor };
+  });
+  const isActive = (key: string) => focus?.kind === kind && focus.key === key;
+  const dimmed = (key: string) => focus?.kind === kind && focus.key !== key;
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <h3 className="text-xs font-semibold text-slate-700">{title}</h3>
+      <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto w-full max-w-[200px]" role="img" aria-label={title}>
+        {arcs.map(({ slice, start, end }) => (
+          <path
+            key={slice.key}
+            d={gapStructureArcPath(size / 2, size / 2, isActive(slice.key) ? r : r - 3, start, end)}
+            fill={slice.color}
+            stroke="#fff"
+            strokeWidth={2}
+            opacity={dimmed(slice.key) ? 0.4 : 1}
+            className="cursor-pointer transition-opacity"
+            onMouseMove={(event) => onHover({ kind, key: slice.key }, event)}
+            onMouseLeave={onLeave}
+            onClick={() => onPin({ kind, key: slice.key })}
+          />
+        ))}
+        {arcs
+          .filter(({ slice }) => slice.percent >= 6)
+          .map(({ slice, start, end }) => {
+            const mid = (start + end) / 2;
+            return (
+              <text
+                key={slice.key}
+                x={size / 2 + r * 0.62 * Math.sin(mid)}
+                y={size / 2 - r * 0.62 * Math.cos(mid)}
+                textAnchor="middle"
+                dominantBaseline="central"
+                className="pointer-events-none fill-white text-[11px] font-semibold"
+              >
+                {formatPercent(slice.percent)}
+              </text>
+            );
+          })}
+      </svg>
+      <div className="grid grid-cols-2 gap-1">
+        {slices.map((slice) => (
+          <button
+            type="button"
+            key={slice.key}
+            onMouseEnter={(event) => onHover({ kind, key: slice.key }, event)}
+            onMouseLeave={onLeave}
+            onClick={() => onPin({ kind, key: slice.key })}
+            className={classNames(
+              "grid grid-cols-[10px_1fr_auto] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] transition focus:outline-none focus:ring-2 focus:ring-sky-100",
+              isActive(slice.key) && "bg-slate-50",
+              dimmed(slice.key) && "opacity-45",
+            )}
+          >
+            <span className="size-2 rounded-full" style={{ backgroundColor: slice.color }} />
+            <span className="truncate font-medium text-slate-600">{slice.label}</span>
+            <span className="text-right font-semibold text-slate-900 tabular-nums">
+              {formatPlainNumber(slice.count)}
+              <span className="ml-1 font-medium text-slate-400">{formatPercent(slice.percent)}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HanoiGapStructureFlow({
+  view,
+  focus,
+  onHover,
+  onLeave,
+  onPin,
+}: {
+  view: GapStructureView;
+  focus: GapStructureFocus | null;
+  onHover: (focus: GapStructureFocus, event: ReactMouseEvent) => void;
+  onLeave: () => void;
+  onPin: (focus: GapStructureFocus) => void;
+}) {
+  const width = 520;
+  const height = 380;
+  const labelWidth = 118;
+  const nodeWidth = 10;
+  const nodeGap = 8;
+  const left = labelWidth;
+  const right = width - labelWidth - nodeWidth;
+  const rows = Math.max(view.start.length, view.now.length);
+  const unit = (height - nodeGap * (rows - 1)) / Math.max(1, view.total);
+
+  const place = (slices: GapStructureSlice[]) => {
+    let y = 0;
+    return new Map(
+      slices.map((slice) => {
+        const box = { y, h: slice.count * unit };
+        y += box.h + nodeGap;
+        return [slice.key, box] as const;
+      }),
+    );
+  };
+  const startBoxes = place(view.start);
+  const nowBoxes = place(view.now);
+  const startOffset = new Map<string, number>();
+  const nowOffset = new Map<string, number>();
+  const nowIndex = (key: string) => view.now.findIndex((slice) => slice.key === key);
+  const startIndex = (key: string) => view.start.findIndex((slice) => slice.key === key);
+
+  const ribbons = view.flows.map((flow) => {
+    const h = flow.count * unit;
+    const y0 = (startBoxes.get(flow.from)?.y ?? 0) + (startOffset.get(flow.from) ?? 0);
+    startOffset.set(flow.from, (startOffset.get(flow.from) ?? 0) + h);
+    return { flow, h, y0, y1: 0 };
+  });
+  for (const ribbon of ribbons
+    .slice()
+    .sort((a, b) => nowIndex(a.flow.to) - nowIndex(b.flow.to) || startIndex(a.flow.from) - startIndex(b.flow.from))) {
+    ribbon.y1 = (nowBoxes.get(ribbon.flow.to)?.y ?? 0) + (nowOffset.get(ribbon.flow.to) ?? 0);
+    nowOffset.set(ribbon.flow.to, (nowOffset.get(ribbon.flow.to) ?? 0) + ribbon.h);
+  }
+
+  const xa = left + nodeWidth;
+  const xb = right;
+  const xm = (xa + xb) / 2;
+  const ribbonPath = ({ h, y0, y1 }: { h: number; y0: number; y1: number }) =>
+    `M${xa},${y0}C${xm},${y0} ${xm},${y1} ${xb},${y1}V${y1 + h}C${xm},${y1 + h} ${xm},${y0 + h} ${xa},${y0 + h}Z`;
+  const activeFlow = focus?.kind === "flow" ? focus.key : null;
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <h3 className="text-xs font-semibold text-slate-700">Gap ban đầu chuyển thành gap nào</h3>
+      <svg viewBox={`0 -4 ${width} ${height + 8}`} className="w-full" role="img" aria-label="Gap ban đầu chuyển thành gap hiện tại">
+        {ribbons.map((ribbon) => {
+          const key = `${ribbon.flow.from}>${ribbon.flow.to}`;
+          return (
+            <path
+              key={key}
+              d={ribbonPath(ribbon)}
+              fill={GAP_STRUCTURE_COLORS[ribbon.flow.from]}
+              fillOpacity={activeFlow === key ? 0.8 : activeFlow ? 0.15 : 0.4}
+              stroke="#fff"
+              strokeWidth={0.5}
+              className="cursor-pointer transition-[fill-opacity]"
+              onMouseMove={(event) => onHover({ kind: "flow", key }, event)}
+              onMouseLeave={onLeave}
+              onClick={() => onPin({ kind: "flow", key })}
+            />
+          );
+        })}
+        {[
+          { slices: view.start, boxes: startBoxes, x: left, side: "left" as const },
+          { slices: view.now, boxes: nowBoxes, x: right, side: "right" as const },
+        ].map(({ slices, boxes, x, side }) =>
+          slices.map((slice) => {
+            const box = boxes.get(slice.key) ?? { y: 0, h: 0 };
+            return (
+              <g key={`${side}-${slice.key}`}>
+                <rect x={x} y={box.y} width={nodeWidth} height={Math.max(1, box.h)} rx={2} fill={slice.color} />
+                <text
+                  x={side === "left" ? x - 6 : x + nodeWidth + 6}
+                  y={box.y + box.h / 2}
+                  textAnchor={side === "left" ? "end" : "start"}
+                  dominantBaseline="central"
+                  className="fill-slate-600 text-[11px] font-medium"
+                >
+                  {slice.label} · {formatPlainNumber(slice.count)}
+                </text>
+              </g>
+            );
+          }),
+        )}
+      </svg>
+      <p className="text-[11px] text-slate-400">Trái: gap ban đầu · Phải: gap hiện tại · Độ dày = số xe</p>
+    </div>
+  );
+}
+
+function HanoiGapStructureSection({
+  leads,
+  loading,
+  error,
+}: {
+  leads: GapStructureLead[] | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const view = useMemo(() => (leads ? buildGapStructureView(leads) : null), [leads]);
+  const [hover, setHover] = useState<GapStructureHover | null>(null);
+  const [pinned, setPinned] = useState<GapStructureFocus | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+
+  useEffect(() => setPinned(null), [leads]);
+
+  if (!view) {
+    return <HanoiStageChartPlaceholder title="Cơ cấu lead có ảnh" loading={loading} error={error} progress={loading ? 50 : 0} />;
+  }
+
+  const onHover = (focus: GapStructureFocus, event: ReactMouseEvent) => {
+    const rect = sectionRef.current?.getBoundingClientRect();
+    setHover({ ...focus, x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) });
+  };
+  const onLeave = () => setHover(null);
+  const focus = hover ?? pinned;
+  const hovered = hover ? gapStructureFocusLeads(view, hover) : null;
+  const pinnedGroup = pinned ? gapStructureFocusLeads(view, pinned) : null;
+  const sectionWidth = sectionRef.current?.clientWidth ?? 1200;
+
+  return (
+    <section ref={sectionRef} className="relative rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+        <div>
+          <h2 className="text-sm font-semibold">Cơ cấu lead có ảnh</h2>
+          <p className="text-[11px] text-slate-400">
+            Gap ban đầu = giá khách đầu tiên trong CRM so với bid dealer cao nhất trong 24 giờ đầu trước kiểm định. Trỏ để xem xe, bấm để ghim danh sách.
+          </p>
+        </div>
+        <span className="shrink-0 text-[11px] font-semibold text-slate-400">{formatPlainNumber(view.total)} xe</span>
+      </div>
+      {view.total === 0 ? (
+        <div className="py-10 text-center text-xs text-slate-400">Không có xe có ảnh trong kỳ.</div>
+      ) : (
+        <div className="grid gap-6 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_minmax(0,1fr)]">
+          <HanoiGapStructurePie title="Theo gap ban đầu" kind="start" slices={view.start} focus={focus} onHover={onHover} onLeave={onLeave} onPin={setPinned} />
+          <HanoiGapStructureFlow view={view} focus={focus} onHover={onHover} onLeave={onLeave} onPin={setPinned} />
+          <HanoiGapStructurePie
+            title="Theo gap hiện tại, tách hoãn bán, win và failed"
+            kind="now"
+            slices={view.now}
+            focus={focus}
+            onHover={onHover}
+            onLeave={onLeave}
+            onPin={setPinned}
+          />
+        </div>
+      )}
+
+      {hover && hovered && (
+        <div
+          className="pointer-events-none absolute z-20 w-[min(30rem,calc(100%-16px))] rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] shadow-lg"
+          style={{ left: Math.max(8, Math.min(sectionWidth - 488, hover.x + 14)), top: hover.y + 14 }}
+        >
+          <div className="mb-1 font-semibold text-slate-700">
+            {hovered.title} · {formatPlainNumber(hovered.count)} xe ({formatPercent(hovered.percent)})
+          </div>
+          {hovered.leads.slice(0, GAP_STRUCTURE_TOOLTIP_ROWS).map((lead) => (
+            <div key={lead.carId} className="truncate text-slate-600 tabular-nums">
+              {gapStructureLeadLine(lead, hover.kind).join(" · ")}
+            </div>
+          ))}
+          {hovered.leads.length > GAP_STRUCTURE_TOOLTIP_ROWS && (
+            <div className="mt-1 text-slate-400">và {hovered.leads.length - GAP_STRUCTURE_TOOLTIP_ROWS} xe khác, bấm để xem hết</div>
+          )}
+        </div>
+      )}
+
+      {pinned && pinnedGroup && (
+        <div className="border-t border-slate-100 px-4 py-3">
+          <div className="mb-2 flex items-center justify-between gap-2 text-xs font-semibold text-slate-700">
+            <span>
+              {pinnedGroup.title} · {formatPlainNumber(pinnedGroup.count)} xe
+            </span>
+            <button type="button" onClick={() => setPinned(null)} className="rounded-md border border-slate-200 px-2 py-0.5 font-medium text-slate-500 hover:bg-slate-50">
+              Đóng
+            </button>
+          </div>
+          <div className="max-h-72 overflow-auto">
+            <table className="w-full text-left text-[11px] tabular-nums">
+              <thead className="sticky top-0 bg-white text-slate-400">
+                <tr>
+                  <th className="py-1 pr-2 font-medium">SĐT</th>
+                  <th className="py-1 pr-2 font-medium">Xe</th>
+                  <th className="py-1 pr-2 font-medium">PIC</th>
+                  <th className="py-1 pr-2 text-right font-medium">Giá khách / bid</th>
+                  <th className="py-1 text-right font-medium">Gap</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pinnedGroup.leads.map((lead) => {
+                  const [phone, car, prices, gap] = gapStructureLeadLine(lead, pinned.kind);
+                  return (
+                    <tr key={lead.carId} className="border-t border-slate-100 text-slate-600">
+                      <td className="py-1 pr-2 whitespace-nowrap">{phone}</td>
+                      <td className="py-1 pr-2">{car}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap">{lead.picName}</td>
+                      <td className="py-1 pr-2 text-right whitespace-nowrap">{prices}</td>
+                      <td className="py-1 text-right whitespace-nowrap">{gap}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 const LEAD_QUALITY_SERIES = [
   { key: "strongQualified", label: "Có ảnh", color: "#65a30d" },
   { key: "weakQualified", label: "Xin ảnh", color: "#facc15" },
@@ -1183,6 +1561,9 @@ function HanoiFunnelDashboard({
   stageLoading,
   stageProgress,
   stageError,
+  gapStructureLeads,
+  gapStructureLoading,
+  gapStructureError,
 }: {
   data: HanoiFunnelResponse | null;
   loading: boolean;
@@ -1191,6 +1572,9 @@ function HanoiFunnelDashboard({
   stageLoading: boolean;
   stageProgress: number;
   stageError: string | null;
+  gapStructureLeads: GapStructureLead[] | null;
+  gapStructureLoading: boolean;
+  gapStructureError: string | null;
 }) {
   if (loading) {
     return (
@@ -1256,6 +1640,8 @@ function HanoiFunnelDashboard({
           <HanoiReasonChart title="Hoãn bán" total={data.delayReasons.total} rows={data.delayReasons.reasons} compact />
         </div>
       </section>
+
+      <HanoiGapStructureSection leads={gapStructureLeads} loading={gapStructureLoading} error={gapStructureError} />
 
       <section className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
         {data.leadQualityError ? (
@@ -1336,6 +1722,9 @@ function FunnelClient() {
   const [hanoiStageLoading, setHanoiStageLoading] = useState(false);
   const [hanoiStageProgress, setHanoiStageProgress] = useState(0);
   const [hanoiStageError, setHanoiStageError] = useState<string | null>(null);
+  const [hanoiGapStructure, setHanoiGapStructure] = useState<{ key: string; leads: GapStructureLead[] } | null>(null);
+  const [hanoiGapStructureLoading, setHanoiGapStructureLoading] = useState(false);
+  const [hanoiGapStructureError, setHanoiGapStructureError] = useState<string | null>(null);
   const [selectedLead, setSelectedLead] = useState<FunnelLead | null>(null);
   const [detail, setDetail] = useState<LeadDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -1716,6 +2105,38 @@ function FunnelClient() {
     params.team,
     params.to,
   ]);
+
+  useEffect(() => {
+    if (params.tab !== "hanoi-funnel") return;
+    if (hanoiGapStructure?.key === currentHanoiStageCacheKey) return;
+
+    const controller = new AbortController();
+    const key = currentHanoiStageCacheKey;
+    setHanoiGapStructureLoading(true);
+    setHanoiGapStructureError(null);
+    const url = new URL("/api/sale-leads-funnel", window.location.origin);
+    url.searchParams.set("from", params.from);
+    url.searchParams.set("to", params.to);
+    url.searchParams.set("team", params.team);
+    url.searchParams.set("summary", "gap-structure");
+    setCsvParam(url.searchParams, "pic", params.pic);
+
+    fetch(url.toString(), { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(body?.details || body?.error || `HTTP ${response.status}`);
+        }
+        return response.json() as Promise<{ gapStructure: { leads: GapStructureLead[] } }>;
+      })
+      .then((payload) => setHanoiGapStructure({ key, leads: payload.gapStructure.leads }))
+      .catch((err) => {
+        if (err.name !== "AbortError") setHanoiGapStructureError(err.message || "Không tải được cơ cấu gap");
+      })
+      .finally(() => setHanoiGapStructureLoading(false));
+
+    return () => controller.abort();
+  }, [currentHanoiStageCacheKey, hanoiGapStructure?.key, params.from, params.pic.join(","), params.tab, params.team, params.to]);
 
   useEffect(() => {
     if (!selectedLead) {
@@ -2113,6 +2534,9 @@ function FunnelClient() {
               stageLoading={hanoiStageLoading}
               stageProgress={hanoiStageProgress}
               stageError={hanoiStageError}
+              gapStructureLeads={hanoiGapStructure?.key === currentHanoiStageCacheKey ? hanoiGapStructure.leads : null}
+              gapStructureLoading={hanoiGapStructureLoading}
+              gapStructureError={hanoiGapStructureError}
             />
           ) : (
             <>

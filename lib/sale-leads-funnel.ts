@@ -678,6 +678,45 @@ export function summarizeDealerBids(rows: DealerBidLike[] | undefined) {
   };
 }
 
+const INITIAL_BID_WINDOW_HOURS = 24;
+
+// Highest pre-inspection dealer bid placed within the first 24h after the car's
+// first valid pre-inspection bid: the price the sale had to start working with.
+export function summarizeInitialDealerBid(rows: DealerBidLike[] | undefined): number | null {
+  const pre = (rows ?? [])
+    .map((row) => ({
+      price: Number(row.price ?? 0),
+      version: Number(row.version ?? 1),
+      at: parseTimestamp(row.created_at ? String(row.created_at) : null),
+      interested: row.is_interested,
+    }))
+    .filter((row) => row.price > 1_000_000 && row.version <= 1 && row.interested !== false);
+  if (pre.length === 0) return null;
+
+  const timed = pre.filter((row) => row.at !== null);
+  if (timed.length === 0) return Math.max(...pre.map((row) => row.price));
+
+  const firstAt = Math.min(...timed.map((row) => row.at as number));
+  const windowEnd = firstAt + INITIAL_BID_WINDOW_HOURS * 3_600_000;
+  return Math.max(...timed.filter((row) => (row.at as number) <= windowEnd).map((row) => row.price));
+}
+
+export interface CustomerPriceHistoryEntry {
+  carId: string | null;
+  price: number | string | null;
+  createdAt: string | null;
+}
+
+// First customer price recorded in CRM history for this car (or for its lead,
+// when the change was logged without a car id).
+export function pickInitialCustomerPrice(entries: CustomerPriceHistoryEntry[], carId: string): number | null {
+  const first = entries
+    .map((entry) => ({ ...entry, price: Number(entry.price ?? 0), at: parseTimestamp(entry.createdAt) }))
+    .filter((entry) => entry.price > 1_000_000 && (!entry.carId || entry.carId === carId))
+    .sort((a, b) => (a.at ?? Number.POSITIVE_INFINITY) - (b.at ?? Number.POSITIVE_INFINITY))[0];
+  return first ? first.price : null;
+}
+
 export function hasQuotedAfter(quoteTimestamps: string[], anchorTimestamp: string | null | undefined): boolean {
   const anchor = parseTimestamp(anchorTimestamp);
   if (anchor === null) return quoteTimestamps.length > 0;

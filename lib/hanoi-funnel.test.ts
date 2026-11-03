@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildGapStructureLead,
+  buildGapStructureView,
+  getGapStructureBucket,
   buildHanoiDelayReasonChart,
   buildHanoiDailyLeadCharts,
   buildHanoiDailyZaloCallChart,
@@ -504,5 +507,73 @@ describe("hanoi funnel metrics", () => {
         { reason: "Chưa có lý do", count: 4, percentOfTotal: 40 },
       ],
     });
+  });
+});
+
+describe("hanoi gap structure", () => {
+  const lead = (overrides: Partial<Parameters<typeof buildGapStructureLead>[0]>) =>
+    buildGapStructureLead({
+      leadId: "lead",
+      carId: "car",
+      phone: "0900000000",
+      carName: "Car",
+      picName: "Sale",
+      workStage: "follow_up_after_quote",
+      initialPriceCustomer: null,
+      initialHighestBid: null,
+      priceCustomer: null,
+      highestBid: null,
+      ...overrides,
+    });
+
+  it("buckets gaps at 5, 10 and 20 percent", () => {
+    expect([getGapStructureBucket(4.9), getGapStructureBucket(5), getGapStructureBucket(10), getGapStructureBucket(20), getGapStructureBucket(20.1), getGapStructureBucket(null)]).toEqual([
+      "lt5",
+      "5_10",
+      "5_10",
+      "10_20",
+      "gt20",
+      "no_price",
+    ]);
+  });
+
+  it("uses the first customer price for the starting gap and splits delayed, win and failed now", () => {
+    const s450 = lead({ initialPriceCustomer: 2_950_000_000, initialHighestBid: 2_550_000_000, priceCustomer: 2_500_000_000, highestBid: 2_450_000_000 });
+    expect(s450.startKey).toBe("10_20");
+    expect(s450.startGapPercent).toBeCloseTo(13.56, 2);
+    expect(s450.nowKey).toBe("lt5");
+
+    expect(lead({ priceCustomer: 400_000_000, initialHighestBid: 380_000_000, workStage: "failed" })).toMatchObject({ startKey: "5_10", nowKey: "failed" });
+    expect(lead({ workStage: "delayed" }).nowKey).toBe("delayed");
+    expect(lead({ workStage: "success" }).nowKey).toBe("win");
+    expect(lead({}).startKey).toBe("no_price");
+  });
+
+  it("builds start and current slices plus flows between them", () => {
+    const view = buildGapStructureView([
+      lead({ carId: "a", priceCustomer: 100_000_000, initialHighestBid: 98_000_000, highestBid: 98_000_000 }),
+      lead({ carId: "b", priceCustomer: 100_000_000, initialHighestBid: 98_000_000, workStage: "failed" }),
+      lead({ carId: "c", priceCustomer: 100_000_000, initialHighestBid: 70_000_000, highestBid: 97_000_000 }),
+      lead({ carId: "d" }),
+    ]);
+
+    expect(view.total).toBe(4);
+    expect(view.start.map((slice) => [slice.key, slice.count])).toEqual([
+      ["lt5", 2],
+      ["gt20", 1],
+      ["no_price", 1],
+    ]);
+    expect(view.now.map((slice) => [slice.key, slice.count])).toEqual([
+      ["lt5", 2],
+      ["no_price", 1],
+      ["failed", 1],
+    ]);
+    expect(view.flows.map((flow) => [flow.from, flow.to, flow.count])).toEqual([
+      ["lt5", "lt5", 1],
+      ["lt5", "failed", 1],
+      ["gt20", "lt5", 1],
+      ["no_price", "no_price", 1],
+    ]);
+    expect(view.start[0].percent).toBe(50);
   });
 });
