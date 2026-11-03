@@ -1,6 +1,36 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { buildPoolConfig, isConnectionError, resolveDatasourceUrl, shouldRetryDbQuery } from "@/lib/db";
+const pgMock = vi.hoisted(() => ({ active: 0, peak: 0, failuresLeft: 0, created: 0 }));
+
+vi.mock("pg", () => ({
+  Pool: class {
+    constructor() {
+      pgMock.created++;
+    }
+    on() {}
+    async query() {
+      if (pgMock.failuresLeft > 0) {
+        pgMock.failuresLeft--;
+        throw Object.assign(new Error('too many connections for role "vucar_data_ro"'), { code: "53300" });
+      }
+      pgMock.active++;
+      pgMock.peak = Math.max(pgMock.peak, pgMock.active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      pgMock.active--;
+      return { rows: [], rowCount: 0 };
+    }
+  },
+}));
+vi.mock("@vercel/functions", () => ({ attachDatabasePool: vi.fn() }));
+
+import {
+  MAX_CONNECTIONS_PER_DATASOURCE,
+  buildPoolConfig,
+  isConnectionError,
+  resolveDatasourceUrl,
+  shouldRetryDbQuery,
+  vucarV2Query,
+} from "@/lib/db";
 
 describe("buildPoolConfig", () => {
   it("strips sslmode=require from vault URLs and keeps encrypted, unverified SSL", () => {
@@ -8,6 +38,14 @@ describe("buildPoolConfig", () => {
 
     expect(config.connectionString).toBe("postgresql://ro:secret@pg-ro.example.com:5432/vucar-v2");
     expect(config.ssl).toEqual({ rejectUnauthorized: false });
+  });
+
+  it("keeps few connections per instance and drops idle ones quickly", () => {
+    const config = buildPoolConfig("postgresql://ro:secret@pg-ro.example.com:5432/vucar-v2?sslmode=require");
+
+    expect(config.max).toBe(MAX_CONNECTIONS_PER_DATASOURCE);
+    expect(config.max).toBeLessThanOrEqual(5);
+    expect(config.idleTimeoutMillis).toBeLessThanOrEqual(5_000);
   });
 
   it("turns SSL off for sslmode=disable (local databases)", () => {
@@ -53,8 +91,36 @@ describe("shouldRetryDbQuery", () => {
     ).toBe(true);
   });
 
+  it("retries when the shared read role is out of connections", () => {
+    expect(shouldRetryDbQuery({ code: "53300", message: 'too many connections for role "vucar_data_ro"' })).toBe(true);
+  });
+
   it("does not retry schema or credential errors", () => {
     expect(shouldRetryDbQuery({ code: "42P01", message: 'relation "x" does not exist' })).toBe(false);
     expect(shouldRetryDbQuery({ code: "28P01", message: "password authentication failed" })).toBe(false);
+  });
+});
+
+describe("vucarV2Query concurrency", () => {
+  it("never runs more queries at once than the per-datasource limit", async () => {
+    vi.stubEnv("VUCAR_V2_READ_DATABASE_URL", "postgresql://ro:secret@pg-ro.example.com:5432/vucar-v2");
+    pgMock.peak = 0;
+
+    await Promise.all(Array.from({ length: 12 }, () => vucarV2Query("select 1")));
+
+    expect(pgMock.peak).toBe(MAX_CONNECTIONS_PER_DATASOURCE);
+    expect(pgMock.created).toBe(1);
+  });
+
+  it("waits and retries when the role is momentarily full", async () => {
+    vi.stubEnv("VUCAR_V2_READ_DATABASE_URL", "postgresql://ro:secret@pg-ro.example.com:5432/vucar-v2");
+    vi.useFakeTimers();
+    pgMock.failuresLeft = 1;
+
+    const result = vucarV2Query("select 1");
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    await expect(result).resolves.toEqual({ rows: [], rowCount: 0 });
+    vi.useRealTimers();
   });
 });

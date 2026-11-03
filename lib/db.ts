@@ -1,3 +1,4 @@
+import { attachDatabasePool } from "@vercel/functions";
 import { Pool, type PoolConfig } from "pg";
 
 type Env = Record<string, string | undefined>;
@@ -11,8 +12,13 @@ export const DATASOURCES = {
 
 type DatasourceKey = keyof typeof DATASOURCES;
 
-const RETRYABLE_DB_ERROR_CODES = new Set(["40001"]);
+// 53300: the shared vucar_data_ro role allows 20 connections across every app, so a full
+// server is usually only full for a moment.
+const RETRYABLE_DB_ERROR_CODES = new Set(["40001", "53300"]);
 const MAX_DB_QUERY_ATTEMPTS = 3;
+// Connections per datasource per server instance. Queries above this wait in our own queue
+// (see acquireSlot) rather than pg's, so a long wait is never mistaken for a dead host.
+export const MAX_CONNECTIONS_PER_DATASOURCE = 4;
 const CONNECTION_ERROR_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EHOSTUNREACH", "28P01"]);
 // After a connection-level failure, skip the datasource for this long instead of
 // paying the DNS/connect timeout on every request.
@@ -21,9 +27,11 @@ const UNAVAILABLE_COOLDOWN_MS = 60_000;
 const globalForDb = globalThis as unknown as {
   dbPools: Partial<Record<DatasourceKey, Pool>> | undefined;
   dbUnavailable: Partial<Record<DatasourceKey, { until: number; message: string }>> | undefined;
+  dbSlots: Partial<Record<DatasourceKey, { active: number; waiting: Array<() => void> }>> | undefined;
 };
 const pools = (globalForDb.dbPools ??= {});
 const unavailable = (globalForDb.dbUnavailable ??= {});
+const slots = (globalForDb.dbSlots ??= {});
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -32,7 +40,16 @@ function sleep(ms: number) {
 export function shouldRetryDbQuery(error: unknown) {
   const code = typeof (error as any)?.code === "string" ? (error as any).code : "";
   const message = typeof (error as any)?.message === "string" ? (error as any).message.toLowerCase() : "";
-  return RETRYABLE_DB_ERROR_CODES.has(code) || message.includes("conflict with recovery");
+  return (
+    RETRYABLE_DB_ERROR_CODES.has(code) ||
+    message.includes("conflict with recovery") ||
+    message.includes("too many connections")
+  );
+}
+
+function retryDelayMs(error: unknown, attempt: number) {
+  const tooManyConnections = (error as any)?.code === "53300" || String((error as any)?.message).includes("too many connections");
+  return (tooManyConnections ? 1_000 : 250) * attempt;
 }
 
 export function isConnectionError(error: unknown) {
@@ -65,9 +82,11 @@ export function buildPoolConfig(connectionString: string): PoolConfig {
   return {
     connectionString: url.toString(),
     ssl: sslDisabled ? false : { rejectUnauthorized: false },
-    max: 15,
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 10000,
+    max: MAX_CONNECTIONS_PER_DATASOURCE,
+    // Short idle timeout: on Vercel, attachDatabasePool keeps the instance awake until idle
+    // clients are closed, so frozen instances do not hold the shared role's connections.
+    idleTimeoutMillis: 5_000,
+    connectionTimeoutMillis: 10_000,
   };
 }
 
@@ -85,9 +104,24 @@ function getPool(key: DatasourceKey): Pool {
     pool.on("error", (err) => {
       console.error(`Unexpected error on idle ${DATASOURCES[key].label} client`, err);
     });
+    attachDatabasePool(pool);
     pools[key] = pool;
   }
   return pool;
+}
+
+async function acquireSlot(key: DatasourceKey) {
+  const slot = (slots[key] ??= { active: 0, waiting: [] });
+  if (slot.active >= MAX_CONNECTIONS_PER_DATASOURCE) {
+    await new Promise<void>((resolve) => slot.waiting.push(resolve));
+  } else {
+    slot.active++;
+  }
+  return () => {
+    const next = slot.waiting.shift();
+    if (next) next();
+    else slot.active--;
+  };
 }
 
 async function timedQuery(key: DatasourceKey, text: string, params?: unknown[]) {
@@ -95,6 +129,16 @@ async function timedQuery(key: DatasourceKey, text: string, params?: unknown[]) 
   const down = unavailable[key];
   if (down && down.until > Date.now()) throw new DatasourceUnavailableError(label, down.message);
 
+  const release = await acquireSlot(key);
+  try {
+    return await runQuery(key, text, params);
+  } finally {
+    release();
+  }
+}
+
+async function runQuery(key: DatasourceKey, text: string, params?: unknown[]) {
+  const { label } = DATASOURCES[key];
   const pool = getPool(key);
   const start = Date.now();
   for (let attempt = 1; attempt <= MAX_DB_QUERY_ATTEMPTS; attempt++) {
@@ -113,12 +157,12 @@ async function timedQuery(key: DatasourceKey, text: string, params?: unknown[]) 
       return res;
     } catch (error) {
       if (attempt < MAX_DB_QUERY_ATTEMPTS && shouldRetryDbQuery(error)) {
-        console.warn(`${label} query retrying after transient replica error`, {
+        console.warn(`${label} query retrying after transient error`, {
           attempt,
           code: (error as any)?.code,
           message: (error as any)?.message,
         });
-        await sleep(250 * attempt);
+        await sleep(retryDelayMs(error, attempt));
         continue;
       }
       if (isConnectionError(error)) {
