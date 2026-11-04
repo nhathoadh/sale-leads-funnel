@@ -74,10 +74,10 @@ describe("southern lead status filter", () => {
 });
 
 describe("sale lead API query budget", () => {
-  it("loads up to 3000 base rows before applying funnel classifiers", () => {
+  it("loads up to 20000 base rows before applying funnel classifiers", () => {
     const routeSource = readFileSync(new URL("../app/api/sale-leads-funnel/route.ts", import.meta.url), "utf8");
 
-    expect(routeSource).toContain("const MAX_BASE_ROWS = 3_000");
+    expect(routeSource).toContain("const MAX_BASE_ROWS = 20_000");
   });
 });
 

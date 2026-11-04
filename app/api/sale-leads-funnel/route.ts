@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
+import { parseSubteamParam, resolveSubteamPicFilter } from "@/lib/sale-subteams";
 import { biddings } from "@/lib/dealer-service";
 import {
   SALE_LEAD_STAGE_CONFIG,
@@ -42,7 +43,7 @@ import {
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const MAX_BASE_ROWS = 3_000;
+const MAX_BASE_ROWS = 20_000;
 const DEFAULT_PAGE_SIZE = 50;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -802,13 +803,15 @@ export async function GET(request: Request) {
     const filterOrder = parseCsv(searchParams.get("filterOrder"));
     const picIds = parseCsv(searchParams.get("pic")).filter((id) => UUID_RE.test(id));
     const team = normalizeSaleLeadTeamFilter(searchParams.get("team"));
+    const subteam = parseSubteamParam(searchParams.get("subteam"));
+    const leadPicIds = await resolveSubteamPicFilter({ team, subteamId: subteam, picIds });
     const shouldCacheSnapshots = searchParams.get("cacheSnapshots") === "true";
     if (shouldCacheSnapshots && !canWriteSnapshotCache(request)) {
       return NextResponse.json({ error: "Unauthorized snapshot cache write" }, { status: 401 });
     }
 
     const { scanned, allRows, picOptionRows, warnings } = await cachedFunnelRows(
-      { from, to, team, picIds },
+      { from, to, team, picIds: leadPicIds },
       { fresh: shouldCacheSnapshots || searchParams.get("fresh") === "1" },
     );
 
@@ -816,7 +819,7 @@ export async function GET(request: Request) {
     const stageSummary = buildSaleLeadStageSummary(counts);
     const workableGapSummary = buildSaleLeadWorkableGapSummary(allRows);
     const snapshotCache = shouldCacheSnapshots
-      ? await writeSnapshotCache({ rows: allRows, from, to, team, picIds })
+      ? await writeSnapshotCache({ rows: allRows, from, to, team, picIds: leadPicIds })
       : null;
     if (searchParams.get("summary") === "gap-structure") {
       return NextResponse.json({
@@ -825,6 +828,7 @@ export async function GET(request: Request) {
           to,
           team,
           pic: picIds,
+          subteam,
         },
         scanned,
         warnings,
@@ -839,6 +843,7 @@ export async function GET(request: Request) {
           to,
           team,
           pic: picIds,
+          subteam,
         },
         scanned,
         warnings,
@@ -881,6 +886,7 @@ export async function GET(request: Request) {
         to,
         team,
         pic: picIds,
+        subteam,
         stage: stageFilter,
         gap: gapFilter,
         hasImages: hasImagesFilter,

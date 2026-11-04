@@ -226,6 +226,7 @@ export interface HanoiFunnelResponse {
     to: string;
     team: SaleLeadTeamFilter;
     pic: string[];
+    subteam?: string | null;
   };
   overview: HanoiOverviewMetrics;
   speedToClose: HanoiSpeedToCloseSummary;

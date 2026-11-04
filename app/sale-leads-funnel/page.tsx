@@ -34,6 +34,7 @@ import {
   type SaleLeadWorkStage,
 } from "@/lib/sale-leads-funnel";
 import { formatCrmValue, groupDealerBidsByDealer, hasRealDealerBidPrice } from "@/lib/sale-leads-funnel-detail";
+import type { SaleSubteam } from "@/lib/sale-subteams";
 import {
   GAP_STRUCTURE_COLORS,
   GAP_STRUCTURE_LABELS,
@@ -105,6 +106,7 @@ interface FunnelResponse {
     to: string;
     team: SaleLeadTeamFilter;
     pic: string[];
+    subteam?: string | null;
     stage: SaleLeadWorkStage[];
     gap: SaleLeadGapBucket[];
     hasImages?: boolean;
@@ -335,8 +337,14 @@ function setCsvParam(params: URLSearchParams, key: string, values: string[]) {
   else params.delete(key);
 }
 
-function hanoiStageCacheKey(input: { from: string; to: string; team: SaleLeadTeamFilter; pic: string[] }) {
-  return [input.from, input.to, input.team, [...input.pic].sort().join(",")].join("|");
+function hanoiStageCacheKey(input: {
+  from: string;
+  to: string;
+  team: SaleLeadTeamFilter;
+  subteam?: string | null;
+  pic: string[];
+}) {
+  return [input.from, input.to, input.team, input.subteam ?? "", [...input.pic].sort().join(",")].join("|");
 }
 
 function stageLabel(stage: SaleLeadWorkStage) {
@@ -1705,6 +1713,7 @@ function FunnelClient() {
   const [refreshNonce, setRefreshNonce] = useState(0);
   const consumedRefreshNonce = useRef(0);
   const [leadPicOptions, setLeadPicOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [subteamOptions, setSubteamOptions] = useState<{ team: string; subteams: SaleSubteam[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hanoiData, setHanoiData] = useState<HanoiFunnelResponse | null>(null);
   const [hanoiPicOptions, setHanoiPicOptions] = useState<{
@@ -1738,6 +1747,7 @@ function FunnelClient() {
     const from = searchParams.get("from") || defaultFromInput();
     const to = searchParams.get("to") || todayInput();
     const team = normalizeSaleLeadTeamFilter(searchParams.get("team"));
+    const subteam = searchParams.get("subteam") ?? "";
     const pic = searchParams.get("pic")?.split(",").filter(Boolean) ?? [];
     const stage = searchParams.get("stage")?.split(",").filter(Boolean) ?? [];
     const gap = searchParams.get("gap")?.split(",").filter(Boolean) ?? [];
@@ -1758,6 +1768,7 @@ function FunnelClient() {
       from,
       to,
       team,
+      subteam,
       pic,
       stage,
       gap,
@@ -1781,8 +1792,9 @@ function FunnelClient() {
   );
 
   const currentHanoiStageCacheKey = useMemo(
-    () => hanoiStageCacheKey({ from: params.from, to: params.to, team: params.team, pic: params.pic }),
-    [params.from, params.to, params.team, params.pic.join(",")],
+    () =>
+      hanoiStageCacheKey({ from: params.from, to: params.to, team: params.team, subteam: params.subteam, pic: params.pic }),
+    [params.from, params.to, params.team, params.subteam, params.pic.join(",")],
   );
   const resolvedHanoiStageCharts = useMemo(() => {
     if (hanoiStageCache?.key === currentHanoiStageCacheKey) return hanoiStageCache.charts;
@@ -1832,6 +1844,8 @@ function FunnelClient() {
     next.set("from", merged.from);
     next.set("to", merged.to);
     next.set("team", merged.team);
+    if (merged.subteam) next.set("subteam", merged.subteam);
+    else next.delete("subteam");
     next.set("sort", merged.sort);
     next.set("page", String(patch.page ?? 1));
     if (merged.tab === "hanoi-funnel") next.set("tab", "hanoi-funnel");
@@ -1893,6 +1907,7 @@ function FunnelClient() {
     url.searchParams.set("team", params.team);
     url.searchParams.set("sort", params.sort);
     url.searchParams.set("page", String(params.page));
+    if (params.subteam) url.searchParams.set("subteam", params.subteam);
     setCsvParam(url.searchParams, "pic", params.pic);
     setCsvParam(url.searchParams, "stage", params.stage);
     setCsvParam(url.searchParams, "gap", params.gap);
@@ -1934,6 +1949,7 @@ function FunnelClient() {
               from: payload.filters.from,
               to: payload.filters.to,
               team: payload.filters.team,
+              subteam: payload.filters.subteam,
               pic: payload.filters.pic,
             }),
             charts,
@@ -1960,6 +1976,7 @@ function FunnelClient() {
     params.from,
     params.to,
     params.team,
+    params.subteam,
     params.pic.join(","),
     params.stage.join(","),
     params.gap.join(","),
@@ -2005,6 +2022,30 @@ function FunnelClient() {
   }, [params.tab, params.team, hanoiPicOptions?.team]);
 
   useEffect(() => {
+    if (subteamOptions?.team === params.team) return;
+
+    const controller = new AbortController();
+    let active = true;
+    const url = new URL("/api/sale-leads-funnel/subteams", window.location.origin);
+    url.searchParams.set("team", params.team);
+    fetch(url, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json() as Promise<{ subteams: SaleSubteam[] }>;
+      })
+      .then((payload) => {
+        if (active) setSubteamOptions({ team: params.team, subteams: payload.subteams });
+      })
+      .catch((err) => {
+        if (active && err.name !== "AbortError") console.warn("Unable to load sub-teams", err);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [params.team, subteamOptions?.team]);
+
+  useEffect(() => {
     if (params.tab !== "hanoi-funnel") return;
 
     const controller = new AbortController();
@@ -2014,6 +2055,7 @@ function FunnelClient() {
     url.searchParams.set("from", params.from);
     url.searchParams.set("to", params.to);
     url.searchParams.set("team", params.team);
+    if (params.subteam) url.searchParams.set("subteam", params.subteam);
     setCsvParam(url.searchParams, "pic", params.pic);
 
     fetch(url.toString(), { signal: controller.signal })
@@ -2031,7 +2073,7 @@ function FunnelClient() {
       .finally(() => setHanoiLoading(false));
 
     return () => controller.abort();
-  }, [params.tab, params.from, params.to, params.team, params.pic.join(",")]);
+  }, [params.tab, params.from, params.to, params.team, params.subteam, params.pic.join(",")]);
 
   useEffect(() => {
     if (params.tab !== "hanoi-funnel") return;
@@ -2054,6 +2096,7 @@ function FunnelClient() {
     url.searchParams.set("to", params.to);
     url.searchParams.set("team", params.team);
     url.searchParams.set("summary", "stage");
+    if (params.subteam) url.searchParams.set("subteam", params.subteam);
     setCsvParam(url.searchParams, "pic", params.pic);
 
     fetch(url.toString(), { signal: controller.signal })
@@ -2076,6 +2119,7 @@ function FunnelClient() {
             from: payload.filters.from,
             to: payload.filters.to,
             team: payload.filters.team,
+            subteam: payload.filters.subteam,
             pic: payload.filters.pic,
           }),
           charts,
@@ -2101,6 +2145,7 @@ function FunnelClient() {
     hanoiStageCache?.key,
     params.from,
     params.pic.join(","),
+    params.subteam,
     params.tab,
     params.team,
     params.to,
@@ -2119,6 +2164,7 @@ function FunnelClient() {
     url.searchParams.set("to", params.to);
     url.searchParams.set("team", params.team);
     url.searchParams.set("summary", "gap-structure");
+    if (params.subteam) url.searchParams.set("subteam", params.subteam);
     setCsvParam(url.searchParams, "pic", params.pic);
 
     fetch(url.toString(), { signal: controller.signal })
@@ -2136,7 +2182,16 @@ function FunnelClient() {
       .finally(() => setHanoiGapStructureLoading(false));
 
     return () => controller.abort();
-  }, [currentHanoiStageCacheKey, hanoiGapStructure?.key, params.from, params.pic.join(","), params.tab, params.team, params.to]);
+  }, [
+    currentHanoiStageCacheKey,
+    hanoiGapStructure?.key,
+    params.from,
+    params.pic.join(","),
+    params.subteam,
+    params.tab,
+    params.team,
+    params.to,
+  ]);
 
   useEffect(() => {
     if (!selectedLead) {
@@ -2212,6 +2267,11 @@ function FunnelClient() {
         ? hanoiPicOptions.options
         : hanoiData?.filters.team === params.team ? hanoiData.picOptions : []
       : leadPicOptions;
+  const subteams = subteamOptions?.team === params.team ? subteamOptions.subteams : [];
+  const subteamMemberIds = subteams.find((subteam) => subteam.id === params.subteam)?.memberIds;
+  const visiblePicOptions = subteamMemberIds
+    ? picOptions.filter((pic) => subteamMemberIds.includes(pic.id))
+    : picOptions;
   const headerTotal = params.tab === "hanoi-funnel" ? hanoiData?.overview.totalLeads ?? 0 : data?.total ?? 0;
   const headerScanned = params.tab === "hanoi-funnel" ? hanoiData?.snapshotMeta?.rows ?? 0 : data?.scanned ?? 0;
 
@@ -2312,7 +2372,7 @@ function FunnelClient() {
               <select
                 value={params.team}
                 onChange={(event) =>
-                  updateParams({ team: event.target.value as SaleLeadTeamFilter, pic: [] })
+                  updateParams({ team: event.target.value as SaleLeadTeamFilter, subteam: "", pic: [] })
                 }
                 className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
               >
@@ -2324,6 +2384,24 @@ function FunnelClient() {
               </select>
             </label>
 
+            {subteams.length > 0 ? (
+              <label className="grid gap-1 text-xs font-medium text-slate-500">
+                Team con
+                <select
+                  value={params.subteam}
+                  onChange={(event) => updateParams({ subteam: event.target.value, pic: [] })}
+                  className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
+                >
+                  <option value="">Tất cả team con</option>
+                  {subteams.map((subteam) => (
+                    <option key={subteam.id} value={subteam.id}>
+                      {subteam.name} ({subteam.memberIds.length})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
             <label className="grid gap-1 text-xs font-medium text-slate-500">
               PIC
               <select
@@ -2332,7 +2410,7 @@ function FunnelClient() {
                 className="h-8 rounded-md border border-slate-200 px-2 text-xs text-slate-900 outline-none transition focus:border-sky-200 focus:ring-2 focus:ring-sky-100"
               >
                 <option value="">Tất cả PIC</option>
-                {picOptions.map((pic) => (
+                {visiblePicOptions.map((pic) => (
                   <option key={pic.id} value={pic.id}>
                     {pic.name}
                   </option>

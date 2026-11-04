@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
+import { parseSubteamParam, resolveSubteamPicFilter } from "@/lib/sale-subteams";
 import { biddings } from "@/lib/dealer-service";
 import {
   LEAD_FAILED_SPEED_EXCLUDED_REASONS,
@@ -473,7 +474,9 @@ export async function GET(request: Request) {
     const from = normalizeHanoiFunnelDateInput(searchParams.get("from"), defaultFrom);
     const to = normalizeHanoiFunnelDateInput(searchParams.get("to"), today);
     const team = normalizeHanoiFunnelTeamFilter(searchParams.get("team"));
-    const pic = parseHanoiFunnelPicFilter(searchParams.get("pic"));
+    const subteam = parseSubteamParam(searchParams.get("subteam"));
+    const selectedPic = parseHanoiFunnelPicFilter(searchParams.get("pic"));
+    const pic = await resolveSubteamPicFilter({ team, subteamId: subteam, picIds: selectedPic });
     const picFilter = pic.length > 0 ? pic : null;
     const picOptionRows = await vucarV2Query(
       `SELECT DISTINCT
@@ -1258,7 +1261,7 @@ export async function GET(request: Request) {
       failedLeads: toNumber(row.failedLeads),
     });
     const response: HanoiFunnelResponse = {
-      filters: { from, to, team, pic },
+      filters: { from, to, team, pic: selectedPic, subteam },
       picOptions: picOptionRows.rows,
       overview: buildHanoiOverviewMetrics({
         totalLeads: toNumber(row.totalLeads),
