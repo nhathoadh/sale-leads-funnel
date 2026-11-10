@@ -12,10 +12,10 @@ import {
   buildHanoiFailureReasonFunnels,
   buildHanoiFunnelStages,
   buildHanoiOverviewMetrics,
-  buildHanoiDetailedSaleCycle,
+  buildHanoiDailyBookingChart,
+  buildHanoiImageLeadBidSummary,
   buildHanoiSpeedToCloseMetrics,
   buildHanoiSummaryCharts,
-  formatHanoiCycleDuration,
   parseHanoiZaloCallMinutes,
   buildHanoiWorkablePieGradient,
   buildHanoiWorkablePieSlices,
@@ -113,55 +113,39 @@ describe("hanoi funnel metrics", () => {
     });
   });
 
-  it("builds detailed sale cycle metrics in operational order and formats durations by hour or day", () => {
-    expect(
-      buildHanoiDetailedSaleCycle([
-        {
-          key: "first_action_image",
-          label: "First action -> Có ảnh",
-          cases: 12,
-          averageHours: 16.24,
-          medianHours: 4.84,
-          previousAverageHours: 48,
-        },
-        {
-          key: "first_quote_win",
-          label: "Trả giá -> Win",
-          cases: 3,
-          averageHours: 96.2,
-          medianHours: 74.2,
-          previousAverageHours: 177.1,
-        },
-      ]),
-    ).toMatchObject({
-      totalMilestones: 15,
-      metrics: [
-        { key: "lead_first_action", cases: 0 },
-        {
-          key: "first_action_image",
-          cases: 12,
-          averageHours: 16.2,
-          medianHours: 4.8,
-          previousAverageHours: 48,
-          averageDeltaHours: -31.8,
-        },
-        { key: "image_outreach", cases: 0 },
-        { key: "outreach_first_bid", cases: 0 },
-        { key: "first_bid_first_quote", cases: 0 },
-        {
-          key: "first_quote_win",
-          cases: 3,
-          averageHours: 96.2,
-          medianHours: 74.2,
-          previousAverageHours: 177.1,
-          averageDeltaHours: -80.9,
-        },
-        { key: "first_quote_failed", cases: 0 },
+  it("builds daily inspection and car view bookings with a per-PIC breakdown", () => {
+    const rows = buildHanoiDailyBookingChart({
+      from: "2026-11-01",
+      to: "2026-11-02",
+      rows: [
+        { day: "2026-11-01", picId: "a", picName: "An", bookingType: "inspection", count: 2 },
+        { day: "2026-11-01", picId: "a", picName: "An", bookingType: "car_viewing", count: 1 },
+        { day: "2026-11-01", picId: "b", picName: "Bình", bookingType: "car_viewing", count: 4 },
+        { day: "2026-10-31", picId: "b", picName: "Bình", bookingType: "inspection", count: 9 },
       ],
     });
-    expect(formatHanoiCycleDuration(4.84)).toBe("4.8h");
-    expect(formatHanoiCycleDuration(50.4)).toBe("2.1d");
-    expect(formatHanoiCycleDuration(-31.8)).toBe("-1.3d");
+    expect(rows).toEqual([
+      {
+        day: "2026-11-01",
+        inspection: 2,
+        carview: 5,
+        total: 7,
+        byPic: [
+          { picId: "b", picName: "Bình", inspection: 0, carview: 4, total: 4 },
+          { picId: "a", picName: "An", inspection: 2, carview: 1, total: 3 },
+        ],
+      },
+      { day: "2026-11-02", inspection: 0, carview: 0, total: 0, byPic: [] },
+    ]);
+  });
+
+  it("averages dealer bids over every lead with images", () => {
+    expect(buildHanoiImageLeadBidSummary({ leadsWithImages: 40, bids: 124 })).toEqual({
+      leadsWithImages: 40,
+      bids: 124,
+      averageBidsPerLead: 3.1,
+    });
+    expect(buildHanoiImageLeadBidSummary({ leadsWithImages: 0, bids: 5 }).averageBidsPerLead).toBe(0);
   });
 
   it("normalizes workable gap buckets in the dashboard order", () => {
@@ -350,9 +334,9 @@ describe("hanoi funnel metrics", () => {
         rows: [
           { messageDay: "2026-09-01", leadCreatedDay: "2026-09-01", leadId: "lead-new-1" },
           { messageDay: "2026-09-01", leadCreatedDay: "2026-09-01", leadId: "lead-new-1" },
-          { messageDay: "2026-09-01", leadCreatedDay: "2026-08-30", leadId: "lead-old-1" },
-          { messageDay: "2026-09-02", leadCreatedDay: "2026-09-02", leadId: "lead-new-2" },
-          { messageDay: "2026-09-02", leadCreatedDay: "2026-09-01", leadId: "lead-old-2" },
+          { messageDay: "2026-09-01", leadCreatedDay: "2026-08-18", leadId: "lead-old-1" },
+          { messageDay: "2026-09-02", leadCreatedDay: "2026-08-20", leadId: "lead-new-2" },
+          { messageDay: "2026-09-02", leadCreatedDay: "2026-08-19", leadId: "lead-old-2" },
           { messageDay: "2026-09-04", leadCreatedDay: "2026-09-01", leadId: "outside-range" },
         ],
       }),
@@ -551,13 +535,19 @@ describe("hanoi gap structure", () => {
 
   it("builds start and current slices plus flows between them", () => {
     const view = buildGapStructureView([
-      lead({ carId: "a", priceCustomer: 100_000_000, initialHighestBid: 98_000_000, highestBid: 98_000_000 }),
+      lead({ carId: "a", priceCustomer: 100_000_000, initialHighestBid: 98_000_000, highestBid: 98_000_000, inspected: true }),
       lead({ carId: "b", priceCustomer: 100_000_000, initialHighestBid: 98_000_000, workStage: "failed" }),
-      lead({ carId: "c", priceCustomer: 100_000_000, initialHighestBid: 70_000_000, highestBid: 97_000_000 }),
+      lead({ carId: "c", priceCustomer: 100_000_000, initialHighestBid: 70_000_000, highestBid: 97_000_000, inspected: true }),
       lead({ carId: "d" }),
     ]);
 
     expect(view.total).toBe(4);
+    expect(view.inspected).toBe(2);
+    expect(view.start.map((slice) => [slice.key, slice.inspectedCount])).toEqual([
+      ["lt5", 1],
+      ["gt20", 1],
+      ["no_price", 0],
+    ]);
     expect(view.start.map((slice) => [slice.key, slice.count])).toEqual([
       ["lt5", 2],
       ["gt20", 1],

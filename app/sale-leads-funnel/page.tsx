@@ -42,7 +42,6 @@ import {
   buildHanoiSummaryCharts,
   buildHanoiWorkablePieGradient,
   buildHanoiWorkablePieSlices,
-  formatHanoiCycleDuration,
   sortHanoiSaleRows,
   type HanoiSaleSortKey,
   type HanoiSortDirection,
@@ -632,7 +631,7 @@ function HanoiGapChart({
   );
 }
 
-type GapStructureFocus = { kind: "start" | "now" | "flow"; key: string };
+type GapStructureFocus = { kind: "start" | "now" | "flow" | "inspection"; key: string };
 type GapStructureHover = GapStructureFocus & { x: number; y: number };
 
 const GAP_STRUCTURE_TOOLTIP_ROWS = 12;
@@ -653,12 +652,21 @@ function gapStructureFocusLeads(view: GapStructureView, focus: GapStructureFocus
       ? { title: `${GAP_STRUCTURE_LABELS[flow.from]} → ${GAP_STRUCTURE_LABELS[flow.to]}`, count: flow.count, percent: (flow.count / Math.max(1, view.total)) * 100, leads: flow.leads }
       : null;
   }
-  const slice = (focus.kind === "start" ? view.start : view.now).find((item) => item.key === focus.key);
-  return slice ? { title: `${focus.kind === "start" ? "Ban đầu" : "Hiện tại"} · ${slice.label}`, count: slice.count, percent: slice.percent, leads: slice.leads } : null;
+  const slice = (focus.kind === "now" ? view.now : view.start).find((item) => item.key === focus.key);
+  if (!slice) return null;
+  if (focus.kind === "inspection") {
+    return {
+      title: `Kiểm định · ${slice.label} · ${formatPlainNumber(slice.inspectedCount)} đã KĐ`,
+      count: slice.count,
+      percent: slice.percent,
+      leads: slice.leads.slice().sort((a, b) => Number(b.inspected) - Number(a.inspected)),
+    };
+  }
+  return { title: `${focus.kind === "start" ? "Ban đầu" : "Hiện tại"} · ${slice.label}`, count: slice.count, percent: slice.percent, leads: slice.leads };
 }
 
 function gapStructureLeadLine(lead: GapStructureLead, kind: GapStructureFocus["kind"]) {
-  if (kind === "start") {
+  if (kind === "start" || kind === "inspection") {
     return [lead.phone || "—", lead.carName, formatGapStructurePrices(lead.startPriceCustomer, lead.startHighestBid), formatGapStructurePercent(lead.startGapPercent)];
   }
   if (kind === "now") {
@@ -712,9 +720,10 @@ function HanoiGapStructurePie({
   const dimmed = (key: string) => focus?.kind === kind && focus.key !== key;
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
-      <h3 className="text-xs font-semibold text-slate-700">{title}</h3>
-      <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto w-full max-w-[200px]" role="img" aria-label={title}>
+    <div className="@container min-w-0">
+      <h3 className="mb-2 text-xs font-semibold text-slate-700">{title}</h3>
+      <div className="flex flex-col items-center justify-center gap-3 @[17rem]:flex-row @[17rem]:gap-4 @md:gap-6">
+      <svg viewBox={`0 0 ${size} ${size}`} className="w-full max-w-[150px] shrink-0 @[17rem]:w-[108px] @sm:w-[124px] @md:w-[136px]" role="img" aria-label={title}>
         {arcs.map(({ slice, start, end }) => (
           <path
             key={slice.key}
@@ -747,7 +756,7 @@ function HanoiGapStructurePie({
             );
           })}
       </svg>
-      <div className="grid grid-cols-2 gap-1">
+      <div className="grid w-full min-w-0 grid-cols-2 gap-x-2 @[17rem]:w-auto @[17rem]:min-w-[11.75rem] @[17rem]:max-w-[14rem] @[17rem]:flex-1 @[17rem]:grid-cols-1">
         {slices.map((slice) => (
           <button
             type="button"
@@ -756,20 +765,88 @@ function HanoiGapStructurePie({
             onMouseLeave={onLeave}
             onClick={() => onPin({ kind, key: slice.key })}
             className={classNames(
-              "grid grid-cols-[10px_1fr_auto] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] transition focus:outline-none focus:ring-2 focus:ring-sky-100",
+              "grid grid-cols-[8px_minmax(0,1fr)_auto_2.5rem] items-center gap-x-2 rounded-md px-1.5 py-0.5 text-left text-[11px] leading-5 transition focus:outline-none focus:ring-2 focus:ring-sky-100",
               isActive(slice.key) && "bg-slate-50",
               dimmed(slice.key) && "opacity-45",
             )}
           >
             <span className="size-2 rounded-full" style={{ backgroundColor: slice.color }} />
             <span className="truncate font-medium text-slate-600">{slice.label}</span>
-            <span className="text-right font-semibold text-slate-900 tabular-nums">
-              {formatPlainNumber(slice.count)}
-              <span className="ml-1 font-medium text-slate-400">{formatPercent(slice.percent)}</span>
-            </span>
+            <span className="text-right font-semibold text-slate-900 tabular-nums">{formatPlainNumber(slice.count)}</span>
+            <span className="text-right font-medium text-slate-400 tabular-nums">{formatPercent(slice.percent)}</span>
           </button>
         ))}
       </div>
+      </div>
+    </div>
+  );
+}
+
+function HanoiGapInspectionChart({
+  view,
+  focus,
+  onHover,
+  onLeave,
+  onPin,
+}: {
+  view: GapStructureView;
+  focus: GapStructureFocus | null;
+  onHover: (focus: GapStructureFocus, event: ReactMouseEvent) => void;
+  onLeave: () => void;
+  onPin: (focus: GapStructureFocus) => void;
+}) {
+  const max = Math.max(1, ...view.start.map((slice) => slice.count));
+  const isActive = (key: string) => focus?.kind === "inspection" && focus.key === key;
+  const dimmed = (key: string) => focus?.kind === "inspection" && focus.key !== key;
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <div>
+        <h3 className="text-xs font-semibold text-slate-700">Kiểm định theo gap ban đầu</h3>
+        <p className="mt-0.5 text-[11px] text-slate-400">
+          {formatPlainNumber(view.inspected)} / {formatPlainNumber(view.total)} xe đã kiểm định (
+          {formatPercent((view.inspected / Math.max(1, view.total)) * 100)}). Bấm để xem danh sách.
+        </p>
+      </div>
+      <div className="flex flex-1 flex-col justify-around gap-2">
+        {view.start.map((slice) => {
+          const rate = (slice.inspectedCount / Math.max(1, slice.count)) * 100;
+          return (
+            <button
+              type="button"
+              key={slice.key}
+              onMouseMove={(event) => onHover({ kind: "inspection", key: slice.key }, event)}
+              onMouseLeave={onLeave}
+              onClick={() => onPin({ kind: "inspection", key: slice.key })}
+              className={classNames(
+                "rounded-md px-2 py-1.5 text-left text-[11px] transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-sky-100",
+                isActive(slice.key) && "bg-slate-50",
+                dimmed(slice.key) && "opacity-45",
+              )}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-slate-600">
+                  <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
+                  <span className="truncate">{slice.label}</span>
+                </span>
+                <span className="shrink-0 tabular-nums text-slate-400">
+                  <span className="font-semibold text-slate-900">{formatPlainNumber(slice.count)}</span> xe · {formatPercent(slice.percent)}
+                </span>
+              </div>
+              <div className="mt-1 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                <div className="flex h-full rounded-full" style={{ width: `${Math.max(2, (slice.count / max) * 100)}%` }}>
+                  <span style={{ flexGrow: slice.inspectedCount, flexBasis: 0, backgroundColor: slice.color }} />
+                  <span style={{ flexGrow: slice.count - slice.inspectedCount, flexBasis: 0, backgroundColor: slice.color, opacity: 0.3 }} />
+                </div>
+              </div>
+              <div className="mt-1 tabular-nums text-slate-500">
+                Đã KĐ <span className="font-semibold text-slate-900">{formatPlainNumber(slice.inspectedCount)}</span> xe · {formatPercent(rate)} nhóm
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-slate-400">Màu đậm: đã kiểm định · Màu nhạt: chưa kiểm định · % = tỉ trọng trên xe có ảnh</p>
     </div>
   );
 }
@@ -787,9 +864,18 @@ function HanoiGapStructureFlow({
   onLeave: () => void;
   onPin: (focus: GapStructureFocus) => void;
 }) {
-  const width = 520;
-  const height = 380;
-  const labelWidth = 118;
+  // Draw at the container's real width so labels keep their size and the height can fill the column.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(520);
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.max(300, Math.round(entry.contentRect.width))));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  const height = Math.round(Math.min(440, Math.max(300, width * 0.8)));
+  const labelWidth = width < 420 ? 104 : 118;
   const nodeWidth = 10;
   const nodeGap = 8;
   const left = labelWidth;
@@ -835,7 +921,7 @@ function HanoiGapStructureFlow({
   const activeFlow = focus?.kind === "flow" ? focus.key : null;
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div ref={containerRef} className="flex min-w-0 flex-col gap-3">
       <h3 className="text-xs font-semibold text-slate-700">Gap ban đầu chuyển thành gap nào</h3>
       <svg viewBox={`0 -4 ${width} ${height + 8}`} className="w-full" role="img" aria-label="Gap ban đầu chuyển thành gap hiện tại">
         {ribbons.map((ribbon) => {
@@ -927,18 +1013,23 @@ function HanoiGapStructureSection({
       {view.total === 0 ? (
         <div className="py-10 text-center text-xs text-slate-400">Không có xe có ảnh trong kỳ.</div>
       ) : (
-        <div className="grid gap-6 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.6fr)_minmax(0,1fr)]">
-          <HanoiGapStructurePie title="Theo gap ban đầu" kind="start" slices={view.start} focus={focus} onHover={onHover} onLeave={onLeave} onPin={setPinned} />
-          <HanoiGapStructureFlow view={view} focus={focus} onHover={onHover} onLeave={onLeave} onPin={setPinned} />
-          <HanoiGapStructurePie
-            title="Theo gap hiện tại, tách hoãn bán, win và failed"
-            kind="now"
-            slices={view.now}
-            focus={focus}
-            onHover={onHover}
-            onLeave={onLeave}
-            onPin={setPinned}
-          />
+        <div className="grid gap-6 p-4 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)] xl:gap-0 xl:divide-x xl:divide-slate-100 xl:[&>*]:px-5 xl:[&>*:first-child]:pl-0 xl:[&>*:last-child]:pr-0">
+          <div className="flex min-w-0 flex-col justify-around gap-6">
+            <HanoiGapStructurePie title="Theo gap ban đầu" kind="start" slices={view.start} focus={focus} onHover={onHover} onLeave={onLeave} onPin={setPinned} />
+            <HanoiGapStructurePie
+              title="Theo gap hiện tại, tách hoãn bán, win và failed"
+              kind="now"
+              slices={view.now}
+              focus={focus}
+              onHover={onHover}
+              onLeave={onLeave}
+              onPin={setPinned}
+            />
+          </div>
+          <div className="min-w-0 md:order-last md:col-span-2 xl:order-none xl:col-span-1">
+            <HanoiGapStructureFlow view={view} focus={focus} onHover={onHover} onLeave={onLeave} onPin={setPinned} />
+          </div>
+          <HanoiGapInspectionChart view={view} focus={focus} onHover={onHover} onLeave={onLeave} onPin={setPinned} />
         </div>
       )}
 
@@ -953,6 +1044,7 @@ function HanoiGapStructureSection({
           {hovered.leads.slice(0, GAP_STRUCTURE_TOOLTIP_ROWS).map((lead) => (
             <div key={lead.carId} className="truncate text-slate-600 tabular-nums">
               {gapStructureLeadLine(lead, hover.kind).join(" · ")}
+              {hover.kind === "inspection" && lead.inspected ? " · đã KĐ" : ""}
             </div>
           ))}
           {hovered.leads.length > GAP_STRUCTURE_TOOLTIP_ROWS && (
@@ -979,7 +1071,8 @@ function HanoiGapStructureSection({
                   <th className="py-1 pr-2 font-medium">Xe</th>
                   <th className="py-1 pr-2 font-medium">PIC</th>
                   <th className="py-1 pr-2 text-right font-medium">Giá khách / bid</th>
-                  <th className="py-1 text-right font-medium">Gap</th>
+                  <th className="py-1 pr-2 text-right font-medium">Gap</th>
+                  <th className="py-1 text-center font-medium">KĐ</th>
                 </tr>
               </thead>
               <tbody>
@@ -991,7 +1084,8 @@ function HanoiGapStructureSection({
                       <td className="py-1 pr-2">{car}</td>
                       <td className="py-1 pr-2 whitespace-nowrap">{lead.picName}</td>
                       <td className="py-1 pr-2 text-right whitespace-nowrap">{prices}</td>
-                      <td className="py-1 text-right whitespace-nowrap">{gap}</td>
+                      <td className="py-1 pr-2 text-right whitespace-nowrap">{gap}</td>
+                      <td className="py-1 text-center">{lead.inspected ? <span className="font-semibold text-emerald-600">✓</span> : <span className="text-slate-300">—</span>}</td>
                     </tr>
                   );
                 })}
@@ -1004,6 +1098,137 @@ function HanoiGapStructureSection({
   );
 }
 
+type HanoiDailyBarSeries = { key: string; label: string; color: string };
+type HanoiDailyBarRow = { day: string; values: Record<string, number>; detail?: ReactNode };
+
+/** Daily bars that always fit their card: no horizontal scroll, thinned day labels, tap or hover for the tooltip. */
+function HanoiDailyBarChart({
+  title,
+  unit,
+  series,
+  rows,
+  description,
+  tall = false,
+}: {
+  title: string;
+  description?: string;
+  unit: string;
+  series: readonly HanoiDailyBarSeries[];
+  rows: HanoiDailyBarRow[];
+  tall?: boolean;
+}) {
+  const [active, setActive] = useState<number | null>(null);
+  const totals = rows.map((row) => series.reduce((sum, item) => sum + (row.values[item.key] ?? 0), 0));
+  const max = Math.max(1, ...totals);
+  const labelEvery = Math.max(1, Math.ceil(rows.length / 7));
+  const activeRow = active === null ? null : rows[active];
+  const activePosition = active === null ? 0 : ((active + 0.5) / Math.max(rows.length, 1)) * 100;
+  const plotHeight = tall ? "h-36" : "h-28";
+
+  return (
+    <section className="min-w-0 rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
+      <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1 border-b border-slate-100 px-3 py-2">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">{title}</h2>
+          {description ? <p className="mt-0.5 text-[11px] leading-4 text-slate-400">{description}</p> : null}
+          {series.length > 1 ? (
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
+              {series.map((item) => (
+                <span key={item.key} className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
+                  {item.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <span className="text-[11px] font-semibold text-slate-400">
+          {formatPlainNumber(totals.reduce((sum, value) => sum + value, 0))} {unit}
+        </span>
+      </div>
+      <div className="px-3 pb-2 pt-3">
+        <div className="grid grid-cols-[26px_minmax(0,1fr)] gap-x-1.5">
+          <div className={classNames("flex flex-col justify-between text-right text-[10px] leading-none text-slate-400", plotHeight)}>
+            {[1, 0.5, 0].map((tick) => (
+              <span key={tick}>{Math.round(max * tick)}</span>
+            ))}
+          </div>
+          <div className={classNames("relative border-b border-slate-200", plotHeight)} onMouseLeave={() => setActive(null)}>
+            <div className="absolute inset-0 flex flex-col justify-between">
+              {[0, 1, 2].map((line) => (
+                <span key={line} className="border-t border-dashed border-slate-100" />
+              ))}
+            </div>
+            <div className="relative z-10 flex h-full items-end gap-px sm:gap-0.5">
+              {rows.map((row, index) => (
+                <button
+                  key={row.day}
+                  type="button"
+                  className="flex h-full min-w-0 flex-1 items-end justify-center rounded-sm hover:bg-slate-50 focus:outline-none"
+                  aria-label={`${formatChartDay(row.day)}: ${formatPlainNumber(totals[index])} ${unit}`}
+                  onMouseEnter={() => setActive(index)}
+                  onFocus={() => setActive(index)}
+                  onClick={() => setActive(index)}
+                >
+                  <span
+                    className={classNames(
+                      "flex w-full max-w-7 flex-col-reverse overflow-hidden rounded-t-sm",
+                      active === index && "opacity-80 ring-2 ring-slate-300",
+                    )}
+                    style={{ height: `${(totals[index] / max) * 100}%`, minHeight: totals[index] > 0 ? 3 : 0 }}
+                  >
+                    {series.map((item) => (
+                      <span
+                        key={item.key}
+                        style={{ flexGrow: row.values[item.key] ?? 0, flexBasis: 0, backgroundColor: item.color }}
+                      />
+                    ))}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {activeRow && active !== null ? (
+              <div
+                className="pointer-events-none absolute bottom-full z-30 mb-1 w-max max-w-[260px] rounded-md border border-slate-200 bg-white px-2.5 py-2 text-[11px] text-slate-600 shadow-lg"
+                style={{
+                  left: `${activePosition}%`,
+                  transform: `translateX(${activePosition < 30 ? "-15%" : activePosition > 70 ? "-85%" : "-50%"})`,
+                }}
+              >
+                <div className="font-semibold text-slate-900">
+                  {formatChartDay(activeRow.day)} · {formatPlainNumber(totals[active])} {unit}
+                </div>
+                {series.length > 1 ? (
+                  <div className="mt-1 space-y-0.5">
+                    {series.map((item) => (
+                      <div key={item.key} className="flex items-center justify-between gap-3">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
+                          {item.label}
+                        </span>
+                        <span className="font-semibold tabular-nums text-slate-900">{formatPlainNumber(activeRow.values[item.key] ?? 0)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {activeRow.detail}
+              </div>
+            ) : null}
+          </div>
+          <div />
+          <div className="mt-1 flex gap-px sm:gap-0.5">
+            {rows.map((row, index) => (
+              <span key={row.day} className="min-w-0 flex-1 overflow-visible whitespace-nowrap text-center text-[9px] text-slate-400">
+                {index % labelEvery === 0 ? formatChartDay(row.day) : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const LEAD_QUALITY_SERIES = [
   { key: "strongQualified", label: "Có ảnh", color: "#65a30d" },
   { key: "weakQualified", label: "Xin ảnh", color: "#facc15" },
@@ -1012,216 +1237,110 @@ const LEAD_QUALITY_SERIES = [
 ] as const;
 
 function HanoiLeadQualityByDayChart({ rows }: { rows: HanoiFunnelResponse["leadQualityByDay"] }) {
-  const max = Math.max(1, ...rows.map((row) => row.total));
-
   return (
-    <section className="rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
-      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 px-3 py-2">
-        <div>
-          <h2 className="text-sm font-semibold">Qualified leads theo ngày</h2>
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
-            {LEAD_QUALITY_SERIES.map((item) => (
-              <span key={item.key} className="inline-flex items-center gap-1.5">
-                <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
-                {item.label}
-              </span>
-            ))}
-          </div>
-        </div>
-        <span className="text-[11px] font-semibold text-slate-400">{formatPlainNumber(rows.reduce((sum, row) => sum + row.total, 0))} lead</span>
-      </div>
-      <div className="overflow-x-auto px-3 pb-3 pt-2">
-        <div className="grid min-w-[760px] grid-cols-[36px_minmax(0,1fr)] gap-2">
-          <div className="flex h-44 flex-col justify-between py-1 text-right text-[10px] text-slate-400">
-            {[1, 0.75, 0.5, 0.25, 0].map((tick) => (
-              <span key={tick}>{Math.round(max * tick)}</span>
-            ))}
-          </div>
-          <div className="relative h-44 border-b border-slate-200">
-            <div className="absolute inset-0 flex flex-col justify-between">
-              {[0, 1, 2, 3].map((line) => (
-                <span key={line} className="border-t border-dashed border-slate-100" />
-              ))}
-            </div>
-            <div className="relative z-10 grid h-full items-end gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(rows.length, 1)}, minmax(20px, 1fr))` }}>
-              {rows.map((row) => (
-                <div key={row.day} className="flex h-full flex-col items-center justify-end gap-1">
-                  <span className="text-[10px] font-semibold text-slate-500">{row.total || ""}</span>
-                  <div className="flex h-[132px] w-full max-w-8 flex-col-reverse overflow-hidden rounded-t-sm bg-slate-50">
-                    {LEAD_QUALITY_SERIES.map((item) => {
-                      const value = row[item.key];
-                      return (
-                        <div
-                          key={item.key}
-                          title={`${item.label}: ${value}`}
-                          style={{ height: `${(value / max) * 100}%`, backgroundColor: item.color }}
-                        />
-                      );
-                    })}
-                  </div>
-                  <span className="whitespace-nowrap text-[10px] text-slate-400">{formatChartDay(row.day)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+    <HanoiDailyBarChart
+      title="Qualified leads theo ngày"
+      unit="lead"
+      series={LEAD_QUALITY_SERIES}
+      tall
+      rows={rows.map((row) => ({
+        day: row.day,
+        values: Object.fromEntries(LEAD_QUALITY_SERIES.map((item) => [item.key, row[item.key]])),
+      }))}
+    />
   );
 }
+
+const WIN_SERIES = [{ key: "count", label: "Win", color: "#a3e635" }] as const;
 
 function HanoiWinCasesByDayChart({ rows }: { rows: HanoiFunnelResponse["winCasesByDay"] }) {
-  const max = Math.max(1, ...rows.map((row) => row.count));
-
   return (
-    <section className="rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
-        <h2 className="text-sm font-semibold">Win case theo ngày</h2>
-        <span className="text-[11px] font-semibold text-slate-400">{formatPlainNumber(rows.reduce((sum, row) => sum + row.count, 0))} win</span>
-      </div>
-      <div className="overflow-x-auto px-3 pb-3 pt-2">
-        <div className="grid min-w-[520px] grid-cols-[30px_minmax(0,1fr)] gap-2">
-          <div className="flex h-44 flex-col justify-between py-1 text-right text-[10px] text-slate-400">
-            {[1, 0.75, 0.5, 0.25, 0].map((tick) => (
-              <span key={tick}>{Math.round(max * tick)}</span>
-            ))}
-          </div>
-          <div className="relative h-44 border-b border-slate-200">
-            <div className="absolute inset-0 flex flex-col justify-between">
-              {[0, 1, 2, 3].map((line) => (
-                <span key={line} className="border-t border-dashed border-slate-100" />
-              ))}
-            </div>
-            <div className="relative z-10 grid h-full items-end gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(rows.length, 1)}, minmax(18px, 1fr))` }}>
-              {rows.map((row) => (
-                <div key={row.day} className="flex h-full flex-col items-center justify-end gap-1">
-                  <span className="text-[10px] font-semibold text-slate-500">{row.count || ""}</span>
-                  <div
-                    className="w-full max-w-8 rounded-t-sm bg-lime-300/80"
-                    title={`${formatChartDay(row.day)}: ${row.count} win`}
-                    style={{ height: `${Math.max(row.count > 0 ? 4 : 0, (row.count / max) * 132)}px` }}
-                  />
-                  <span className="whitespace-nowrap text-[10px] text-slate-400">{formatChartDay(row.day)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+    <HanoiDailyBarChart
+      title="Win case theo ngày"
+      unit="win"
+      series={WIN_SERIES}
+      tall
+      rows={rows.map((row) => ({ day: row.day, values: { count: row.count } }))}
+    />
   );
 }
 
-function HanoiDailyLeadIntakeChart({ rows }: { rows: HanoiFunnelResponse["dailyLeadIntake"] }) {
-  const max = Math.max(1, ...rows.map((row) => row.count));
+const LEAD_INTAKE_SERIES = [{ key: "count", label: "Lead", color: "#0ea5e9" }] as const;
 
+function HanoiDailyLeadIntakeChart({ rows }: { rows: HanoiFunnelResponse["dailyLeadIntake"] }) {
   return (
-    <section className="rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
-        <h2 className="text-sm font-semibold">Lead nhận mỗi ngày</h2>
-        <span className="text-[11px] font-semibold text-slate-400">
-          {formatPlainNumber(rows.reduce((sum, row) => sum + row.count, 0))} lead
-        </span>
-      </div>
-      <div className="overflow-x-auto px-3 pb-3 pt-2">
-        <div className="grid min-w-[520px] grid-cols-[30px_minmax(0,1fr)] gap-2">
-          <div className="flex h-32 flex-col justify-between py-1 text-right text-[10px] text-slate-400">
-            {[1, 0.5, 0].map((tick) => (
-              <span key={tick}>{Math.round(max * tick)}</span>
-            ))}
-          </div>
-          <div className="relative h-32 border-b border-slate-200">
-            <div className="absolute inset-0 flex flex-col justify-between">
-              {[0, 1].map((line) => (
-                <span key={line} className="border-t border-dashed border-slate-100" />
-              ))}
-            </div>
-            <div className="relative z-10 grid h-full items-end gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(rows.length, 1)}, minmax(18px, 1fr))` }}>
-              {rows.map((row) => (
-                <div key={row.day} className="flex h-full flex-col items-center justify-end gap-1">
-                  <span className="text-[10px] font-semibold text-slate-500">{row.count || ""}</span>
-                  <div
-                    className="w-full max-w-8 rounded-t-sm bg-sky-500"
-                    title={`${formatChartDay(row.day)}: ${formatPlainNumber(row.count)} lead`}
-                    style={{ height: `${Math.max(row.count > 0 ? 4 : 0, (row.count / max) * 92)}px` }}
-                  />
-                  <span className="whitespace-nowrap text-[10px] text-slate-400">{formatChartDay(row.day)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+    <HanoiDailyBarChart
+      title="Lead nhận mỗi ngày"
+      unit="lead"
+      series={LEAD_INTAKE_SERIES}
+      rows={rows.map((row) => ({ day: row.day, values: { count: row.count } }))}
+    />
   );
 }
 
 const HUMAN_MESSAGE_MIX_SERIES = [
-  { key: "newLeadCount", label: "Lead mới", color: "#10b981" },
-  { key: "existingLeadCount", label: "Lead cũ", color: "#64748b" },
+  { key: "newLeadCount", label: "Lead mới (< 14 ngày)", color: "#10b981" },
+  { key: "existingLeadCount", label: "Lead cũ (≥ 14 ngày)", color: "#64748b" },
 ] as const;
 
 function HanoiHumanMessageMixChart({ rows }: { rows: HanoiFunnelResponse["dailyHumanMessageMix"] }) {
-  const max = Math.max(1, ...rows.map((row) => row.total));
-
   return (
-    <section className="rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
-      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 px-3 py-2">
-        <div>
-          <h2 className="text-sm font-semibold">Human message theo ngày</h2>
-          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
-            {HUMAN_MESSAGE_MIX_SERIES.map((item) => (
-              <span key={item.key} className="inline-flex items-center gap-1.5">
-                <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
-                {item.label}
-              </span>
-            ))}
-          </div>
-        </div>
-        <span className="text-[11px] font-semibold text-slate-400">
-          {formatPlainNumber(rows.reduce((sum, row) => sum + row.total, 0))} lead
-        </span>
-      </div>
-      <div className="overflow-x-auto px-3 pb-3 pt-2">
-        <div className="grid min-w-[520px] grid-cols-[30px_minmax(0,1fr)] gap-2">
-          <div className="flex h-32 flex-col justify-between py-1 text-right text-[10px] text-slate-400">
-            {[1, 0.5, 0].map((tick) => (
-              <span key={tick}>{Math.round(max * tick)}</span>
-            ))}
-          </div>
-          <div className="relative h-32 border-b border-slate-200">
-            <div className="absolute inset-0 flex flex-col justify-between">
-              {[0, 1].map((line) => (
-                <span key={line} className="border-t border-dashed border-slate-100" />
-              ))}
-            </div>
-            <div className="relative z-10 grid h-full items-end gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(rows.length, 1)}, minmax(18px, 1fr))` }}>
-              {rows.map((row) => (
-                <div key={row.day} className="flex h-full flex-col items-center justify-end gap-1">
-                  <span className="text-[10px] font-semibold text-slate-500">{row.total || ""}</span>
-                  <div
-                    className="flex h-[92px] w-full max-w-8 flex-col-reverse overflow-hidden rounded-t-sm bg-slate-50"
-                    title={`${formatChartDay(row.day)}: ${formatPlainNumber(row.total)} lead human message`}
-                  >
-                    {HUMAN_MESSAGE_MIX_SERIES.map((item) => {
-                      const value = row[item.key];
-                      return (
-                        <div
-                          key={item.key}
-                          title={`${item.label}: ${formatPlainNumber(value)}`}
-                          style={{ height: `${(value / max) * 100}%`, backgroundColor: item.color }}
-                        />
-                      );
-                    })}
-                  </div>
-                  <span className="whitespace-nowrap text-[10px] text-slate-400">{formatChartDay(row.day)}</span>
+    <HanoiDailyBarChart
+      title="Human message theo ngày"
+      description="Số lead được sale nhắn Zalo (không tính AI) mỗi ngày. Lead mới: tạo trong 14 ngày gần nhất tính tới ngày nhắn; lead cũ: tạo từ 14 ngày trở lên."
+      unit="lead"
+      series={HUMAN_MESSAGE_MIX_SERIES}
+      rows={rows.map((row) => ({
+        day: row.day,
+        values: { newLeadCount: row.newLeadCount, existingLeadCount: row.existingLeadCount },
+      }))}
+    />
+  );
+}
+
+const BOOKING_SERIES = [
+  { key: "inspection", label: "Kiểm định", color: "#6366f1" },
+  { key: "carview", label: "Xem xe", color: "#f59e0b" },
+] as const;
+const BOOKING_TOOLTIP_PIC_LIMIT = 10;
+
+function HanoiDailyBookingChart({ rows }: { rows: HanoiFunnelResponse["dailyBookings"] }) {
+  return (
+    <HanoiDailyBarChart
+      title="Lịch kiểm định + xem xe"
+      unit="lịch"
+      series={BOOKING_SERIES}
+      rows={rows.map((row) => {
+        const shown = row.byPic.slice(0, BOOKING_TOOLTIP_PIC_LIMIT);
+        const hiddenTotal = row.byPic.slice(BOOKING_TOOLTIP_PIC_LIMIT).reduce((sum, pic) => sum + pic.total, 0);
+        return {
+          day: row.day,
+          values: { inspection: row.inspection, carview: row.carview },
+          detail:
+            row.byPic.length > 0 ? (
+              <div className="mt-1.5 border-t border-slate-100 pt-1.5">
+                <div className="mb-0.5 grid grid-cols-[minmax(0,1fr)_28px_28px] gap-2 text-[10px] font-semibold uppercase text-slate-400">
+                  <span>PIC</span>
+                  <span className="text-right">KĐ</span>
+                  <span className="text-right">Xem</span>
                 </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
+                {shown.map((pic) => (
+                  <div key={pic.picId} className="grid grid-cols-[minmax(0,1fr)_28px_28px] gap-2">
+                    <span className="truncate">{pic.picName}</span>
+                    <span className="text-right font-semibold tabular-nums text-slate-900">{pic.inspection || "–"}</span>
+                    <span className="text-right font-semibold tabular-nums text-slate-900">{pic.carview || "–"}</span>
+                  </div>
+                ))}
+                {hiddenTotal > 0 ? (
+                  <div className="mt-0.5 text-slate-400">
+                    +{row.byPic.length - shown.length} PIC khác · {formatPlainNumber(hiddenTotal)} lịch
+                  </div>
+                ) : null}
+              </div>
+            ) : null,
+        };
+      })}
+    />
   );
 }
 
@@ -1237,10 +1356,10 @@ function HanoiZaloCallChart({ rows }: { rows: HanoiFunnelResponse["dailyZaloCall
   const maxLeads = Math.max(1, ...rows.map((row) => row.uniqueLeadCount));
   const totalMinutes = rows.reduce((sum, row) => sum + row.totalMinutes, 0);
   const totalLeadTouches = rows.reduce((sum, row) => sum + row.uniqueLeadCount, 0);
-  const showDayLabel = (index: number) => rows.length <= 16 || index === 0 || index === rows.length - 1 || index % 3 === 0;
+  const labelEvery = Math.max(1, Math.ceil(rows.length / 7));
 
   return (
-    <section className="rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
+    <section className="min-w-0 rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
       <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 px-3 py-2">
         <div>
           <h2 className="text-sm font-semibold">Phút gọi Zalo theo ngày</h2>
@@ -1259,51 +1378,58 @@ function HanoiZaloCallChart({ rows }: { rows: HanoiFunnelResponse["dailyZaloCall
           {formatCallMinutes(totalMinutes)} phút · {formatPlainNumber(totalLeadTouches)} lead/ngày
         </span>
       </div>
-      <div className="overflow-x-auto px-3 pb-3 pt-2">
-        <div className="grid min-w-[720px] grid-cols-[40px_minmax(0,1fr)_30px] gap-2">
-          <div className="flex h-32 flex-col justify-between py-1 text-right text-[10px] text-slate-400">
+      <div className="px-3 pb-2 pt-3">
+        <div className="grid grid-cols-[32px_minmax(0,1fr)_22px] gap-x-1.5">
+          <div className="flex h-28 flex-col justify-between text-right leading-none text-[10px] text-slate-400">
             {[1, 0.5, 0].map((tick) => (
               <span key={tick}>{formatCallMinutes(maxMinutes * tick)}</span>
             ))}
           </div>
-          <div className="relative h-32 border-b border-slate-200">
+          <div className="relative h-28 border-b border-slate-200">
             <div className="absolute inset-0 flex flex-col justify-between">
               {[0, 1].map((line) => (
                 <span key={line} className="border-t border-dashed border-slate-100" />
               ))}
             </div>
-            <div className="relative z-10 grid h-full items-end gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(rows.length, 1)}, minmax(18px, 1fr))` }}>
-              {rows.map((row, index) => (
-                <div key={row.day} className="relative flex h-full flex-col items-center justify-end gap-1">
-                  <span className="h-3 text-[10px] font-semibold text-slate-500">{row.totalMinutes > 0 ? formatCallMinutes(row.totalMinutes) : ""}</span>
-                  <div className="relative h-[92px] w-full max-w-8">
+            <div className="relative z-10 flex h-full items-end gap-px sm:gap-0.5">
+              {rows.map((row) => (
+                <div key={row.day} className="relative flex h-full min-w-0 flex-1 flex-col items-center justify-end">
+                  <div className="relative h-full w-full max-w-7">
                     {row.totalMinutes > 0 ? (
                       <div
                         className="absolute bottom-0 left-1/2 w-full -translate-x-1/2 rounded-t-sm bg-cyan-500"
                         title={`${formatChartDay(row.day)}: ${formatCallMinutes(row.totalMinutes)} phút gọi`}
-                        style={{ height: `${Math.max(4, (row.totalMinutes / maxMinutes) * 92)}px` }}
+                        style={{ height: `max(4px, ${(row.totalMinutes / maxMinutes) * 100}%)` }}
                       />
                     ) : null}
                     {row.uniqueLeadCount > 0 ? (
                       <span
-                        className="absolute left-1/2 inline-flex h-4 min-w-4 -translate-x-1/2 items-center justify-center rounded-full border border-white bg-violet-500 px-1 text-[9px] font-semibold leading-none text-white shadow-sm"
+                        className="absolute left-1/2 inline-flex size-2 -translate-x-1/2 items-center justify-center rounded-full border border-white bg-violet-500 text-[9px] font-semibold leading-none text-transparent shadow-sm sm:size-auto sm:h-4 sm:min-w-4 sm:px-1 sm:text-white"
                         title={`${formatChartDay(row.day)}: ${formatPlainNumber(row.uniqueLeadCount)} unique lead được gọi`}
-                        style={{ bottom: `${Math.max(4, (row.uniqueLeadCount / maxLeads) * 86)}px` }}
+                        style={{ bottom: `max(2px, calc(${(row.uniqueLeadCount / maxLeads) * 100}% - 16px))` }}
                       >
                         {row.uniqueLeadCount}
                       </span>
                     ) : null}
                   </div>
-                  <span className="h-3 whitespace-nowrap text-[10px] text-slate-400">{showDayLabel(index) ? formatChartDay(row.day) : ""}</span>
                 </div>
               ))}
             </div>
           </div>
-          <div className="flex h-32 flex-col justify-between py-1 text-[10px] text-violet-400">
+          <div className="flex h-28 flex-col justify-between text-[10px] leading-none text-violet-400">
             {[1, 0.5, 0].map((tick) => (
               <span key={tick}>{Math.round(maxLeads * tick)}</span>
             ))}
           </div>
+          <div />
+          <div className="mt-1 flex gap-px sm:gap-0.5">
+            {rows.map((row, index) => (
+              <span key={row.day} className="min-w-0 flex-1 overflow-visible whitespace-nowrap text-center text-[9px] text-slate-400">
+                {index % labelEvery === 0 ? formatChartDay(row.day) : ""}
+              </span>
+            ))}
+          </div>
+          <div />
         </div>
       </div>
     </section>
@@ -1326,7 +1452,7 @@ function HanoiSpeedCard({ data }: { data: HanoiFunnelResponse["speedToClose"] })
         {data.metrics.map((metric, index) => (
           <div
             key={metric.key}
-            className="grid gap-1.5 rounded-md border border-slate-200 bg-white p-1.5 md:grid-cols-[minmax(220px,1fr)_66px_66px]"
+            className="grid grid-cols-[minmax(0,1fr)_52px_52px] items-center gap-1.5 rounded-md border border-slate-200 bg-white p-1.5 sm:grid-cols-[minmax(0,1fr)_66px_66px]"
           >
             <div className="flex min-w-0 gap-2">
               <div className="w-6 shrink-0 text-xs font-semibold text-indigo-500">{String(index + 1).padStart(2, "0")}</div>
@@ -1348,58 +1474,6 @@ function HanoiSpeedCard({ data }: { data: HanoiFunnelResponse["speedToClose"] })
             </div>
             <div className="rounded-md bg-slate-100 px-1.5 py-1 text-center">
               <div className="text-xs font-semibold text-slate-950">{metric.medianDays}d</div>
-              <div className="text-[9px] font-semibold text-slate-500">MED</div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function HanoiDetailedSaleCycleCard({ data }: { data: HanoiFunnelResponse["detailedSaleCycle"] }) {
-  return (
-    <section className="rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
-      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
-        <div className="flex items-center gap-2">
-          <span className="inline-flex size-6 items-center justify-center rounded-md border border-teal-100 bg-teal-50 text-teal-700">
-            <ArrowDownUp className="size-3" />
-          </span>
-          <h2 className="text-sm font-semibold tracking-tight">Sale cycle chi tiết</h2>
-        </div>
-        <span className="text-[11px] font-semibold text-slate-400">{formatPlainNumber(data.totalMilestones)} milestones</span>
-      </div>
-      <div className="flex h-[calc(100%-33px)] flex-col justify-around gap-1.5 p-2">
-        {data.metrics.map((metric, index) => (
-          <div
-            key={metric.key}
-            className="grid gap-1.5 rounded-md border border-slate-200 bg-white p-1.5 md:grid-cols-[minmax(220px,1fr)_66px_66px]"
-          >
-            <div className="flex min-w-0 gap-2">
-              <div className="w-6 shrink-0 text-xs font-semibold text-teal-600">{String(index + 1).padStart(2, "0")}</div>
-              <div className="min-w-0">
-                <div className="text-xs font-semibold tracking-tight text-slate-950">{metric.label}</div>
-                <div className="mt-0.5 flex flex-wrap gap-x-1.5 gap-y-0.5 text-[11px] text-slate-500">
-                  <span>{formatPlainNumber(metric.cases)} cases</span>
-                  <span>LM {formatHanoiCycleDuration(metric.previousAverageHours)}</span>
-                  <span
-                    className={classNames(
-                      "font-semibold",
-                      metric.averageDeltaHours > 0 ? "text-rose-600" : "text-emerald-600",
-                    )}
-                  >
-                    {metric.averageDeltaHours > 0 ? "+" : ""}
-                    {formatHanoiCycleDuration(metric.averageDeltaHours)}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div className="rounded-md bg-slate-100 px-1.5 py-1 text-center">
-              <div className="text-xs font-semibold text-slate-950">{formatHanoiCycleDuration(metric.averageHours)}</div>
-              <div className="text-[9px] font-semibold text-slate-500">AVG</div>
-            </div>
-            <div className="rounded-md bg-slate-100 px-1.5 py-1 text-center">
-              <div className="text-xs font-semibold text-slate-950">{formatHanoiCycleDuration(metric.medianHours)}</div>
               <div className="text-[9px] font-semibold text-slate-500">MED</div>
             </div>
           </div>
@@ -1604,33 +1678,40 @@ function HanoiFunnelDashboard({
 
   return (
     <div className="space-y-3">
-      <section className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+      <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
         <HanoiMetricCard label="Lead" value={formatPlainNumber(data.overview.totalLeads)} hint="Lead trong kỳ" />
         <HanoiMetricCard label="Win" value={formatPlainNumber(data.overview.soldCars)} hint={`${formatPercent(data.overview.conversionRate)} CVR`} />
         <HanoiMetricCard label="GMV" value={formatMillionShort(data.overview.gmv)} hint="Tổng giá bán" />
         <HanoiMetricCard label="Revenue" value={formatMillionShort(data.overview.expectedRevenue)} hint="Doanh thu dự kiến" />
         <HanoiMetricCard label="Avg sold" value={formatMillionShort(data.overview.averageSoldCarValue)} hint="Giá trị xe TB" />
         <HanoiMetricCard label="Rev/car" value={formatMillionOneDecimal(data.overview.averageRevenuePerCar)} hint="Doanh thu TB" />
+        <HanoiMetricCard
+          label="Bids/lead có ảnh"
+          value={data.imageLeadBids ? formatPlainNumber(data.imageLeadBids.averageBidsPerLead) : "—"}
+          hint={
+            data.imageLeadBids
+              ? `${formatPlainNumber(data.imageLeadBids.bids)} bid / ${formatPlainNumber(data.imageLeadBids.leadsWithImages)} lead`
+              : "Không đọc được giá dealer"
+          }
+        />
       </section>
 
-      <section className="grid items-stretch gap-3 xl:grid-cols-[minmax(395px,1fr)_minmax(315px,1.15fr)_minmax(315px,1.15fr)_minmax(190px,0.55fr)]">
+      <section className="grid items-stretch gap-3 md:grid-cols-2 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,0.6fr)]">
         <HanoiSpeedCard data={data.speedToClose} />
         <HanoiFunnelChart title="Funnel tổng" stages={data.totalFunnel} />
         <HanoiFunnelChart title="Funnel cohort" stages={data.cohortFunnel} />
         <HanoiTargetProcess stages={data.targetFunnel} />
       </section>
 
-      <section className="grid gap-3 xl:grid-cols-[minmax(395px,1fr)_minmax(315px,1.15fr)_minmax(315px,1.15fr)_minmax(190px,0.55fr)]">
-        <HanoiDetailedSaleCycleCard data={data.detailedSaleCycle} />
-        <div className="grid gap-3 xl:col-span-3">
-          <HanoiDailyLeadIntakeChart rows={data.dailyLeadIntake} />
-          <HanoiHumanMessageMixChart rows={data.dailyHumanMessageMix} />
-          <HanoiZaloCallChart rows={data.dailyZaloCalls} />
-        </div>
+      <section className="grid gap-3 lg:grid-cols-2">
+        <HanoiDailyBookingChart rows={data.dailyBookings} />
+        <HanoiDailyLeadIntakeChart rows={data.dailyLeadIntake} />
+        <HanoiHumanMessageMixChart rows={data.dailyHumanMessageMix} />
+        <HanoiZaloCallChart rows={data.dailyZaloCalls} />
       </section>
 
-      <section className="overflow-x-auto pb-1">
-        <div className="grid min-w-[1580px] grid-cols-[minmax(300px,1fr)_minmax(300px,1fr)_repeat(3,minmax(250px,0.82fr))] gap-3">
+      <section>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
           {stageCharts ? (
             <>
               <HanoiWorkStageChart chart={stageCharts.stageChart} />
@@ -1651,7 +1732,7 @@ function HanoiFunnelDashboard({
 
       <HanoiGapStructureSection leads={gapStructureLeads} loading={gapStructureLoading} error={gapStructureError} />
 
-      <section className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
+      <section className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.65fr)]">
         {data.leadQualityError ? (
           <HanoiStageChartPlaceholder title="Qualified leads theo ngày" loading={false} error={data.leadQualityError} progress={0} />
         ) : (

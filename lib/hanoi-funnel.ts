@@ -48,33 +48,6 @@ export interface HanoiSpeedToCloseSummary {
   metrics: HanoiSpeedToCloseMetric[];
 }
 
-export type HanoiDetailedSaleCycleMetricKey =
-  | "lead_first_action"
-  | "first_action_image"
-  | "image_outreach"
-  | "outreach_first_bid"
-  | "first_bid_first_quote"
-  | "first_quote_win"
-  | "first_quote_failed";
-
-export interface HanoiDetailedSaleCycleMetricInput {
-  key: HanoiDetailedSaleCycleMetricKey;
-  label: string;
-  cases: number;
-  averageHours: number;
-  medianHours: number;
-  previousAverageHours: number;
-}
-
-export interface HanoiDetailedSaleCycleMetric extends HanoiDetailedSaleCycleMetricInput {
-  averageDeltaHours: number;
-}
-
-export interface HanoiDetailedSaleCycleSummary {
-  totalMilestones: number;
-  metrics: HanoiDetailedSaleCycleMetric[];
-}
-
 export type HanoiFailureReasonGroupKey = "worked" | "not_worked";
 
 export interface HanoiFailureReasonInput {
@@ -170,6 +143,16 @@ export interface HanoiDailyZaloCallInput {
   minutes: number;
 }
 
+export type HanoiBookingType = "inspection" | "car_viewing";
+
+export interface HanoiDailyBookingInput {
+  day: string;
+  picId: string;
+  picName: string;
+  bookingType: HanoiBookingType;
+  count: number;
+}
+
 export interface HanoiDailyWinInput {
   day: string;
   count: number;
@@ -191,6 +174,29 @@ export interface HanoiDailyZaloCallPoint {
   day: string;
   totalMinutes: number;
   uniqueLeadCount: number;
+}
+
+export interface HanoiDailyBookingPic {
+  picId: string;
+  picName: string;
+  inspection: number;
+  carview: number;
+  total: number;
+}
+
+export interface HanoiDailyBookingPoint {
+  day: string;
+  inspection: number;
+  carview: number;
+  total: number;
+  /** Bookings per lead PIC on this day, most bookings first. */
+  byPic: HanoiDailyBookingPic[];
+}
+
+export interface HanoiImageLeadBidSummary {
+  leadsWithImages: number;
+  bids: number;
+  averageBidsPerLead: number;
 }
 
 export interface HanoiDailyLeadQualityPoint {
@@ -230,7 +236,6 @@ export interface HanoiFunnelResponse {
   };
   overview: HanoiOverviewMetrics;
   speedToClose: HanoiSpeedToCloseSummary;
-  detailedSaleCycle: HanoiDetailedSaleCycleSummary;
   workStageChart: HanoiWorkStageChart;
   workableGapChart: HanoiWorkableGapChart;
   snapshotMeta?: {
@@ -244,6 +249,9 @@ export interface HanoiFunnelResponse {
   dailyLeadIntake: HanoiDailyLeadIntakePoint[];
   dailyHumanMessageMix: HanoiDailyHumanMessageMixPoint[];
   dailyZaloCalls: HanoiDailyZaloCallPoint[];
+  dailyBookings: HanoiDailyBookingPoint[];
+  /** Null when the dealer service could not be read. */
+  imageLeadBids: HanoiImageLeadBidSummary | null;
   leadQualityByDay: HanoiDailyLeadQualityPoint[];
   leadQualityError?: string | null;
   winCasesByDay: HanoiDailyWinPoint[];
@@ -285,16 +293,6 @@ const speedMetricDefinitions: Array<Pick<HanoiSpeedToCloseMetricInput, "key" | "
   { key: "booking_win", label: "Booking → Win" },
   { key: "lead_failed", label: "Lead → Failed" },
 ];
-const detailedSaleCycleDefinitions: Array<Pick<HanoiDetailedSaleCycleMetricInput, "key" | "label">> = [
-  { key: "lead_first_action", label: "Lead → First action" },
-  { key: "first_action_image", label: "First action → Có ảnh" },
-  { key: "image_outreach", label: "Có ảnh → Chào dealer" },
-  { key: "outreach_first_bid", label: "Chào dealer → Lấy giá" },
-  { key: "first_bid_first_quote", label: "Lấy giá → Trả giá lần 1" },
-  { key: "first_quote_win", label: "Trả giá lần 1 → Thành công" },
-  { key: "first_quote_failed", label: "Trả giá lần 1 → Thất bại" },
-];
-
 export const LEAD_FAILED_SPEED_EXCLUDED_REASONS = [
   "dealer/cò",
   "khách ghost",
@@ -445,42 +443,6 @@ export function buildHanoiSpeedToCloseMetrics(rows: HanoiSpeedToCloseMetricInput
   };
 }
 
-export function buildHanoiDetailedSaleCycle(rows: HanoiDetailedSaleCycleMetricInput[]): HanoiDetailedSaleCycleSummary {
-  const rowsByKey = new Map(rows.map((row) => [row.key, row]));
-  const orderedRows = detailedSaleCycleDefinitions.map((definition) => ({
-    ...definition,
-    cases: 0,
-    averageHours: 0,
-    medianHours: 0,
-    previousAverageHours: 0,
-    ...rowsByKey.get(definition.key),
-  }));
-
-  return {
-    totalMilestones: orderedRows.reduce((sum, row) => sum + row.cases, 0),
-    metrics: orderedRows.map((row) => {
-      const averageHours = toOneDecimal(row.averageHours);
-      const previousAverageHours = toOneDecimal(row.previousAverageHours);
-
-      return {
-        ...row,
-        averageHours,
-        medianHours: toOneDecimal(row.medianHours),
-        previousAverageHours,
-        averageDeltaHours: toOneDecimal(averageHours - previousAverageHours),
-      };
-    }),
-  };
-}
-
-export function formatHanoiCycleDuration(hours: number) {
-  if (!Number.isFinite(hours) || hours === 0) return "0h";
-  const sign = hours < 0 ? "-" : "";
-  const absoluteHours = Math.abs(hours);
-  if (absoluteHours < 24) return `${sign}${toOneDecimal(absoluteHours)}h`;
-  return `${sign}${toOneDecimal(absoluteHours / 24)}d`;
-}
-
 export function buildHanoiWorkStageChart(summary: {
   total: number;
   stages: Array<{ key: string; label: string; shortLabel: string; count: number }>;
@@ -607,6 +569,13 @@ export function buildHanoiDailyLeadIntakeChart(input: {
   return days.map((day) => ({ day, count: leadsByDay.get(day)?.size ?? 0 }));
 }
 
+/** A lead counts as "new" on a message day while it is younger than this many days. */
+export const HANOI_NEW_LEAD_MAX_AGE_DAYS = 14;
+
+function daysBetween(fromDay: string, toDay: string) {
+  return Math.round((Date.parse(`${toDay}T00:00:00Z`) - Date.parse(`${fromDay}T00:00:00Z`)) / 86_400_000);
+}
+
 export function buildHanoiDailyHumanMessageMixChart(input: {
   from: string;
   to: string;
@@ -620,7 +589,7 @@ export function buildHanoiDailyHumanMessageMixChart(input: {
   for (const row of input.rows) {
     const dayLeads = leadKindByDay.get(row.messageDay);
     if (!dayLeads || !row.leadId) continue;
-    const kind = row.leadCreatedDay === row.messageDay ? "new" : "existing";
+    const kind = daysBetween(row.leadCreatedDay, row.messageDay) < HANOI_NEW_LEAD_MAX_AGE_DAYS ? "new" : "existing";
     const currentKind = dayLeads.get(row.leadId);
     if (currentKind === "new") continue;
     dayLeads.set(row.leadId, kind);
@@ -663,6 +632,45 @@ export function buildHanoiDailyZaloCallChart(input: {
     totalMinutes: toOneDecimal(minutesByDay.get(day) ?? 0),
     uniqueLeadCount: leadsByDay.get(day)?.size ?? 0,
   }));
+}
+
+export function buildHanoiDailyBookingChart(input: {
+  from: string;
+  to: string;
+  rows: HanoiDailyBookingInput[];
+}): HanoiDailyBookingPoint[] {
+  const days = dateRange(input.from, input.to);
+  const picsByDay = new Map(days.map((day) => [day, new Map<string, HanoiDailyBookingPic>()]));
+
+  for (const row of input.rows) {
+    const dayPics = picsByDay.get(row.day);
+    const count = Number(row.count ?? 0);
+    if (!dayPics || count <= 0) continue;
+    const pic = dayPics.get(row.picId) ?? { picId: row.picId, picName: row.picName, inspection: 0, carview: 0, total: 0 };
+    if (row.bookingType === "inspection") pic.inspection += count;
+    else pic.carview += count;
+    pic.total += count;
+    dayPics.set(row.picId, pic);
+  }
+
+  return days.map((day) => {
+    const byPic = Array.from(picsByDay.get(day)?.values() ?? []).sort(
+      (left, right) => right.total - left.total || left.picName.localeCompare(right.picName),
+    );
+    const inspection = byPic.reduce((sum, pic) => sum + pic.inspection, 0);
+    const carview = byPic.reduce((sum, pic) => sum + pic.carview, 0);
+    return { day, inspection, carview, total: inspection + carview, byPic };
+  });
+}
+
+export function buildHanoiImageLeadBidSummary(input: { leadsWithImages: number; bids: number }): HanoiImageLeadBidSummary {
+  const leadsWithImages = Math.max(0, Number(input.leadsWithImages ?? 0));
+  const bids = Math.max(0, Number(input.bids ?? 0));
+  return {
+    leadsWithImages,
+    bids,
+    averageBidsPerLead: leadsWithImages > 0 ? toOneDecimal(bids / leadsWithImages) : 0,
+  };
 }
 
 export function buildHanoiWorkablePieSlices(chart: HanoiWorkableGapChart): HanoiWorkablePieSlice[] {
@@ -828,11 +836,13 @@ export function buildHanoiTotalFunnel(counts: {
 }
 
 export function buildHanoiTargetFunnel(counts: {
+  totalLeads: number;
   targetLeads: number;
   targetLeadsWithImages: number;
   targetInspectionBookings: number;
 }): HanoiFunnelStage[] {
   return buildHanoiFunnelStages([
+    { key: "total", label: "total", count: counts.totalLeads },
     { key: "target", label: "total_target", count: counts.targetLeads },
     { key: "target_image", label: "co_anh_target", count: counts.targetLeadsWithImages },
     { key: "target_inspection", label: "kiem_dinh_target", count: counts.targetInspectionBookings },
@@ -848,6 +858,7 @@ export interface GapStructureLead {
   phone: string | null;
   carName: string;
   picName: string;
+  inspected: boolean;
   startKey: GapStructureStartKey;
   nowKey: GapStructureNowKey;
   startGapPercent: number | null;
@@ -864,6 +875,7 @@ export interface GapStructureSlice {
   color: string;
   count: number;
   percent: number;
+  inspectedCount: number;
   leads: GapStructureLead[];
 }
 
@@ -876,6 +888,7 @@ export interface GapStructureFlow {
 
 export interface GapStructureView {
   total: number;
+  inspected: number;
   start: GapStructureSlice[];
   now: GapStructureSlice[];
   flows: GapStructureFlow[];
@@ -921,6 +934,7 @@ export function buildGapStructureLead(input: {
   carName: string;
   picName: string;
   workStage: string;
+  inspected?: boolean;
   initialPriceCustomer: number | null;
   initialHighestBid: number | null;
   priceCustomer: number | null;
@@ -944,6 +958,7 @@ export function buildGapStructureLead(input: {
     phone: input.phone,
     carName: input.carName,
     picName: input.picName,
+    inspected: input.inspected === true,
     startKey: getGapStructureBucket(startGapPercent),
     nowKey,
     startGapPercent,
@@ -971,6 +986,7 @@ export function buildGapStructureView(leads: GapStructureLead[]): GapStructureVi
           color: GAP_STRUCTURE_COLORS[key],
           count: group.length,
           percent: total > 0 ? Number(((group.length / total) * 100).toFixed(2)) : 0,
+          inspectedCount: group.filter((lead) => lead.inspected).length,
           leads: sortByGap(group, field),
         };
       })
@@ -986,6 +1002,7 @@ export function buildGapStructureView(leads: GapStructureLead[]): GapStructureVi
 
   return {
     total,
+    inspected: leads.filter((lead) => lead.inspected).length,
     start: slices(GAP_STRUCTURE_START_ORDER, (lead) => lead.startKey, "startGapPercent"),
     now: slices(GAP_STRUCTURE_NOW_ORDER, (lead) => lead.nowKey, "nowGapPercent"),
     flows,

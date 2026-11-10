@@ -771,6 +771,7 @@ async function buildGapStructureLeads(rows: any[]) {
       carName: row.carName,
       picName: row.picName,
       workStage: row.workStage,
+      inspected: Boolean(row.inspected),
       initialPriceCustomer: pickInitialCustomerPrice(history.get(String(row.leadId)) ?? [], row.carId),
       initialHighestBid: row.initialHighestBid ?? null,
       priceCustomer: row.priceCustomer ?? null,

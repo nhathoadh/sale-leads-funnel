@@ -10,7 +10,8 @@ import {
   buildHanoiDailyLeadIntakeChart,
   buildHanoiDailyZaloCallChart,
   buildHanoiDelayReasonChart,
-  buildHanoiDetailedSaleCycle,
+  buildHanoiDailyBookingChart,
+  buildHanoiImageLeadBidSummary,
   buildHanoiFailureReasonFunnels,
   buildHanoiOverviewMetrics,
   buildHanoiSpeedToCloseMetrics,
@@ -23,16 +24,13 @@ import {
   parseHanoiZaloCallMinutes,
   parseHanoiFunnelPicFilter,
   type HanoiDelayReasonInput,
-  type HanoiDetailedSaleCycleMetricInput,
-  type HanoiDetailedSaleCycleMetricKey,
+  type HanoiBookingType,
   type HanoiFailureReasonInput,
   type HanoiFunnelResponse,
   type HanoiSpeedToCloseMetricInput,
 } from "@/lib/hanoi-funnel";
 import {
-  countStoredVehicleImages,
   classifySaleLeadStage,
-  extractSaleTextQuoteEvents,
   hasVehicleImagesFromSources,
 } from "@/lib/sale-leads-funnel";
 import {
@@ -47,15 +45,7 @@ export const maxDuration = 60;
 
 const TARGET_LOCATION_PATTERN = "HANOI|HÀ NỘI|HÀ-NỘI|HÀ_NỘI";
 const REAL_BID_MIN = 1_000_000;
-const DETAILED_SALE_CYCLE_DEFINITIONS: Array<{ key: HanoiDetailedSaleCycleMetricKey; label: string }> = [
-  { key: "lead_first_action", label: "Lead → First action" },
-  { key: "first_action_image", label: "First action → Có ảnh" },
-  { key: "image_outreach", label: "Có ảnh → Chào dealer" },
-  { key: "outreach_first_bid", label: "Chào dealer → Lấy giá" },
-  { key: "first_bid_first_quote", label: "Lấy giá → Trả giá lần 1" },
-  { key: "first_quote_win", label: "Trả giá lần 1 → Thành công" },
-  { key: "first_quote_failed", label: "Trả giá lần 1 → Thất bại" },
-];
+
 function toNumber(value: unknown): number {
   return Number(value ?? 0);
 }
@@ -70,78 +60,13 @@ function parseJsonValue(value: unknown): any {
   }
 }
 
-function normalizeSnapshots(value: unknown): any[] {
-  const parsed = parseJsonValue(value);
-  if (!parsed) return [];
-  return Array.isArray(parsed) ? parsed : [parsed];
-}
-
-function parseDateValue(value: unknown): Date | null {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isFinite(date.getTime()) ? date : null;
-}
-
-function firstTimestampAfter(values: unknown[], anchor?: unknown): Date | null {
-  const anchorDate = parseDateValue(anchor);
-  const anchorTime = anchorDate?.getTime() ?? null;
-  return (
-    values
-      .map(parseDateValue)
-      .filter((value): value is Date => Boolean(value))
-      .filter((value) => anchorTime === null || value.getTime() >= anchorTime)
-      .sort((left, right) => left.getTime() - right.getTime())[0] ?? null
-  );
-}
-
-function durationHours(from: unknown, to: unknown): number | null {
-  const start = parseDateValue(from);
-  const end = parseDateValue(to);
-  if (!start || !end || end.getTime() < start.getTime()) return null;
-  return (end.getTime() - start.getTime()) / 3_600_000;
-}
-
-function average(values: number[]) {
-  return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
-}
-
-function median(values: number[]) {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
-
 function normalizePhoneKey(value: unknown): string | null {
   const phone = String(value ?? "").trim();
   return phone ? phone : null;
 }
 
-function getQuoteTimesFromSummary(value: unknown): unknown[] {
-  const timestamps: unknown[] = [];
-  for (const snapshot of normalizeSnapshots(value)) {
-    const quoteTs = snapshot?.quote_ts ?? snapshot?.quoteTs;
-    if (Array.isArray(quoteTs)) timestamps.push(...quoteTs);
-    else if (quoteTs) timestamps.push(quoteTs);
-    if (snapshot?.price_vucar_offered_at) timestamps.push(snapshot.price_vucar_offered_at);
-  }
-  return timestamps;
-}
-
 function teamMembershipCondition(teamParamIndex: number): string {
   return `UPPER(t.name) = UPPER($${teamParamIndex}::text)`;
-}
-
-function emptyDetailedSaleCycle() {
-  return buildHanoiDetailedSaleCycle(
-    DETAILED_SALE_CYCLE_DEFINITIONS.map((definition) => ({
-      ...definition,
-      cases: 0,
-      averageHours: 0,
-      medianHours: 0,
-      previousAverageHours: 0,
-    })),
-  );
 }
 
 async function optionalHanoiChart<T>(label: string, promise: Promise<T>, fallback: T): Promise<T> {
@@ -200,270 +125,84 @@ async function readSnapshotSummaries(input: {
   }
 }
 
-async function readDetailedSaleCyclePeriod(input: {
-  from: string;
-  to: string;
-  team: string;
-  picFilter: string[] | null;
-}): Promise<HanoiDetailedSaleCycleMetricInput[]> {
-  const emptyRows = () =>
-    DETAILED_SALE_CYCLE_DEFINITIONS.map((definition) => ({
-      ...definition,
-      cases: 0,
-      averageHours: 0,
-      medianHours: 0,
-      previousAverageHours: 0,
-    }));
+type PeriodFilter = { from: string; to: string; team: string; picFilter: string[] | null };
 
-  try {
-    const baseResult = await vucarV2Query(
-      `
-        WITH members AS (
-          SELECT DISTINCT u.id AS pic_id
-          FROM users u
-          JOIN team_members tm ON tm.user_id = u.id
-          JOIN teams t ON t.id = tm.team_id
-          WHERE ${teamMembershipCondition(4)}
-            AND ($3::uuid[] IS NULL OR u.id = ANY($3::uuid[]))
-        )
-        SELECT
-          l.id::text AS lead_id,
-          l.phone,
-          l.created_at AS lead_created_at,
-          c.id::text AS car_id,
-          c.created_at AS car_created_at,
-          c.updated_at AS car_updated_at,
-          c.additional_images
+/** Inspection and car view bookings by booking day and lead PIC, matching the funnel's booking counts. */
+async function readDailyBookingRows(input: PeriodFilter) {
+  const result = await vucarV2Query(
+    `
+      WITH members AS (
+        SELECT DISTINCT
+          u.id AS pic_id,
+          COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name, u.id::text) AS pic_name
+        FROM users u
+        LEFT JOIN sales s ON s.user_id = u.id
+        JOIN team_members tm ON tm.user_id = u.id
+        JOIN teams t ON t.id = tm.team_id
+        WHERE ${teamMembershipCondition(4)}
+          AND ($3::uuid[] IS NULL OR u.id = ANY($3::uuid[]))
+      )
+      SELECT
+        (b.time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date::text AS day,
+        m.pic_id::text AS "picId",
+        m.pic_name AS "picName",
+        b.booking_type AS "bookingType",
+        COUNT(DISTINCT b.id)::int AS count
+      FROM members m
+      JOIN leads l ON l.pic_id = m.pic_id
+      JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
+      JOIN bookings b ON b.car_id = c.id::text
+      WHERE b.booking_type IN ('inspection', 'car_viewing')
+        AND (b.time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
+      GROUP BY 1, 2, 3, 4
+    `,
+    [input.from, input.to, input.picFilter, input.team],
+  );
+  return result.rows.map((row: any) => ({
+    day: String(row.day),
+    picId: String(row.picId),
+    picName: String(row.picName),
+    bookingType: row.bookingType as HanoiBookingType,
+    count: toNumber(row.count),
+  }));
+}
+
+/** Real dealer bids (price > 1tr) on the cars of every lead with images created in the period. */
+async function readImageLeadBids(input: PeriodFilter) {
+  const result = await vucarV2Query(
+    `
+      WITH members AS (
+        SELECT DISTINCT u.id AS pic_id
+        FROM users u
+        JOIN team_members tm ON tm.user_id = u.id
+        JOIN teams t ON t.id = tm.team_id
+        WHERE ${teamMembershipCondition(4)}
+          AND ($3::uuid[] IS NULL OR u.id = ANY($3::uuid[]))
+      ),
+      image_leads AS (
+        SELECT DISTINCT l.id AS lead_id
         FROM members m
         JOIN leads l ON l.pic_id = m.pic_id
         JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
         WHERE (l.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
-        ORDER BY l.created_at ASC
-      `,
-      [input.from, input.to, input.picFilter, input.team],
-    );
-    const baseRows = baseResult.rows;
-    const carIds = baseRows.map((row: any) => row.car_id).filter(Boolean);
-    const phones = Array.from(new Set(baseRows.map((row: any) => row.phone).filter(Boolean)));
-
-    const [statusResult, summaryResult, zaloResult, dealerGrouped] = await Promise.all([
-      carIds.length > 0
-        ? vucarV2Query(
-            `
-              SELECT
-                car_id::text AS car_id,
-                MIN(COALESCE(updated_at, created_at)) FILTER (WHERE price_highest_bid > $2::bigint) AS crm_bid_at,
-                MIN(first_payment_date) FILTER (WHERE first_payment_date IS NOT NULL) AS win_at,
-                MIN(COALESCE(updated_at, created_at)) FILTER (WHERE stage::text = 'FAILED') AS failed_at
-              FROM sale_status
-              WHERE car_id = ANY($1::uuid[])
-              GROUP BY car_id
-            `,
-            [carIds, REAL_BID_MIN],
-          ).catch((error) => {
-            console.warn("[hanoi-funnel] detailed sale cycle status unavailable:", error instanceof Error ? error.message : error);
-            return { rows: [] };
-          })
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
-        ? vucarV2Query(
-            `
-              SELECT DISTINCT ON (c.id)
-                c.id::text AS car_id,
-                sp.result
-              FROM cars c
-              JOIN leads l ON l.id = c.lead_id
-              JOIN chat_summary cs ON cs.lead_id = l.id
-              JOIN summary_properties sp ON sp.summary_id = cs.id
-              WHERE c.id = ANY($1::uuid[])
-              ORDER BY c.id, sp.created_at DESC
-            `,
-            [carIds],
-          ).catch((error) => {
-            console.warn("[hanoi-funnel] detailed sale cycle summaries unavailable:", error instanceof Error ? error.message : error);
-            return { rows: [] };
-          })
-        : Promise.resolve({ rows: [] }),
-      phones.length > 0
-        ? vucarZaloQuery(
-            `
-              SELECT
-                lr.phone,
-                MIN(lr.created_at) AS relation_created_at,
-                MIN(m.created_at) FILTER (WHERE m.is_self = false) AS first_customer_message_at,
-                MIN(m.created_at) FILTER (
-                  WHERE m.is_self = false
-                    AND m.content IS NOT NULL
-                    AND (
-                      m.msg_type = 'chat.photo'
-                      OR (
-                        m.content LIKE '{%'
-                        AND (m.content LIKE '%"href"%' OR m.content LIKE '%"thumb"%')
-                        AND (
-                          (m.content LIKE '%"width"%' AND m.content LIKE '%"height"%')
-                          OR m.content LIKE '%https://photo-%'
-                          OR m.content LIKE '%https://photo.%'
-                          OR m.content LIKE '%zpc.zdn.vn%'
-                        )
-                      )
-                    )
-                ) AS first_customer_image_at,
-                ARRAY_AGG(m.created_at ORDER BY m.created_at) FILTER (
-                  WHERE m.is_self = true
-                    AND m.content IS NOT NULL
-                    AND m.content LIKE '{%'
-                    AND m.content LIKE '%sendBubbleMessage%'
-                    AND (m.content ILIKE '%Cuộc gọi%' OR m.content ILIKE '%Cuoc goi%')
-                    AND (
-                      m.content LIKE '%recommened.calltime%'
-                      OR m.content LIKE '%recommended.calltime%'
-                    )
-                ) AS sale_completed_call_ts,
-                JSONB_AGG(
-                  JSONB_BUILD_OBJECT('created_at', m.created_at, 'content', m.content, 'source', m.source)
-                  ORDER BY m.created_at
-                ) FILTER (
-                  WHERE m.is_self = true
-                    AND m.content IS NOT NULL
-                    AND BTRIM(m.content) NOT LIKE '{%'
-                    AND m.content ~* '[0-9]'
-                    AND (
-                      m.content ~* '(tỷ|ty|tỉ|ti|tr|triệu|trieu)'
-                      OR m.content ~* '[0-9]{2,4}[[:space:]]*[-–][[:space:]]*[0-9]{2,4}'
-                      OR m.content ~* '(giá|gia|mức|muc|khung giá|khung gia)[[:space:]]+[0-9]{2,4}'
-                      OR m.content ~* '(tầm|tam|khoảng|khoang|quanh|được|duoc)[[:space:]]+[0-9]{2,4}'
-                    )
-                    AND m.content ~* '(giá|gia|trả|tra|mua|khách|khach|khoảng|khoang|tầm|tam|giao dịch|giao dich)'
-                ) AS sale_text_quote_messages
-              FROM leads_relation lr
-              LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
-              WHERE lr.phone = ANY($1::text[])
-              GROUP BY lr.phone
-            `,
-            [phones],
-          ).catch((error) => {
-            console.warn("[hanoi-funnel] detailed sale cycle Zalo unavailable:", error instanceof Error ? error.message : error);
-            return { rows: [] };
-          })
-        : Promise.resolve({ rows: [] }),
-      carIds.length > 0
-        ? biddings.listByCarsGrouped(carIds).catch((error) => {
-            console.warn("[hanoi-funnel] detailed sale cycle dealer bids unavailable:", error instanceof Error ? error.message : error);
-            return {};
-          })
-        : Promise.resolve({}),
-    ]);
-
-    const statusByCar = new Map(statusResult.rows.map((row: any) => [row.car_id, row]));
-    const summaryByCar = new Map(summaryResult.rows.map((row: any) => [row.car_id, row.result]));
-    const zaloByPhone = new Map(zaloResult.rows.map((row: any) => [row.phone, row]));
-    const durations = new Map<HanoiDetailedSaleCycleMetricKey, number[]>(
-      DETAILED_SALE_CYCLE_DEFINITIONS.map((definition) => [definition.key, []]),
-    );
-
-    for (const row of baseRows) {
-      const leadAt = parseDateValue(row.lead_created_at);
-      const status = statusByCar.get(row.car_id) ?? {};
-      const zalo = row.phone ? zaloByPhone.get(row.phone) : null;
-      const firstActionAt = firstTimestampAfter(
-        [zalo?.relation_created_at, zalo?.first_customer_message_at],
-        leadAt,
-      );
-      const imageZaloAt = firstTimestampAfter([zalo?.first_customer_image_at], firstActionAt ?? leadAt);
-      const hasStoredVehicleImages = countStoredVehicleImages(row.additional_images) > 0;
-      const storedImageProxyAt = hasStoredVehicleImages
-        ? firstTimestampAfter([row.car_updated_at, row.car_created_at], firstActionAt ?? leadAt)
-        : null;
-      const firstImageAt = firstTimestampAfter([imageZaloAt, storedImageProxyAt], firstActionAt ?? leadAt);
-      const bids = ((dealerGrouped as Record<string, any[]>)[row.car_id] ?? []).map((bid) => ({
-        createdAt: bid.created_at,
-        price: Number(bid.price ?? 0),
-      }));
-      const firstDealerOutreachAt = firstTimestampAfter(
-        bids.map((bid) => bid.createdAt),
-        firstImageAt ?? leadAt,
-      );
-      const firstDealerBidAt = firstTimestampAfter(
-        bids.filter((bid) => bid.price > REAL_BID_MIN).map((bid) => bid.createdAt),
-        firstDealerOutreachAt ?? firstImageAt ?? leadAt,
-      );
-      const crmBidAt = firstTimestampAfter([status.crm_bid_at], firstDealerOutreachAt ?? firstImageAt ?? leadAt);
-      const firstBidAt = firstTimestampAfter([firstDealerBidAt, crmBidAt], firstDealerOutreachAt ?? firstImageAt ?? leadAt);
-      const textQuoteTimes = extractSaleTextQuoteEvents(zalo?.sale_text_quote_messages).map((event) => event.at);
-      const firstQuoteAt = firstTimestampAfter(
-        [
-          ...(Array.isArray(zalo?.sale_completed_call_ts) ? zalo.sale_completed_call_ts : []),
-          ...textQuoteTimes,
-          ...getQuoteTimesFromSummary(summaryByCar.get(row.car_id)),
-        ],
-        firstBidAt ?? firstDealerOutreachAt ?? firstImageAt ?? leadAt,
-      );
-      const winAt = firstTimestampAfter([status.win_at], firstQuoteAt ?? leadAt);
-      const failedAt = firstTimestampAfter([status.failed_at], firstQuoteAt ?? leadAt);
-      const pairs: Array<[HanoiDetailedSaleCycleMetricKey, unknown, unknown]> = [
-        ["lead_first_action", leadAt, firstActionAt],
-        ["first_action_image", firstActionAt, firstImageAt],
-        ["image_outreach", firstImageAt, firstDealerOutreachAt],
-        ["outreach_first_bid", firstDealerOutreachAt, firstBidAt],
-        ["first_bid_first_quote", firstBidAt, firstQuoteAt],
-        ["first_quote_win", firstQuoteAt, winAt],
-        ["first_quote_failed", firstQuoteAt, failedAt],
-      ];
-
-      for (const [key, start, end] of pairs) {
-        const hours = durationHours(start, end);
-        if (hours !== null) durations.get(key)?.push(hours);
-      }
-    }
-
-    return DETAILED_SALE_CYCLE_DEFINITIONS.map((definition) => {
-      const values = durations.get(definition.key) ?? [];
-      return {
-        ...definition,
-        cases: values.length,
-        averageHours: average(values),
-        medianHours: median(values),
-        previousAverageHours: 0,
-      };
-    });
-  } catch (error) {
-    console.warn("[hanoi-funnel] detailed sale cycle unavailable:", error instanceof Error ? error.message : error);
-    return emptyRows();
-  }
-}
-
-function previousPeriod(from: string, to: string) {
-  const shift = (value: string) => {
-    const date = new Date(`${value}T00:00:00.000Z`);
-    date.setUTCMonth(date.getUTCMonth() - 1);
-    return date.toISOString().slice(0, 10);
-  };
-  return { from: shift(from), to: shift(to) };
-}
-
-async function readDetailedSaleCycleSummary(input: {
-  from: string;
-  to: string;
-  team: string;
-  picFilter: string[] | null;
-}) {
-  const previous = previousPeriod(input.from, input.to);
-  const [currentRows, previousRows] = await Promise.all([
-    readDetailedSaleCyclePeriod(input),
-    readDetailedSaleCyclePeriod({
-      ...input,
-      from: previous.from,
-      to: previous.to,
-    }),
-  ]);
-  const previousByKey = new Map(previousRows.map((row) => [row.key, row]));
-
-  return buildHanoiDetailedSaleCycle(
-    currentRows.map((row) => ({
-      ...row,
-      previousAverageHours: previousByKey.get(row.key)?.averageHours ?? 0,
-    })),
+          AND c.additional_images IS NOT NULL
+      )
+      SELECT il.lead_id::text AS lead_id, c.id::text AS car_id
+      FROM image_leads il
+      JOIN cars c ON c.lead_id = il.lead_id AND COALESCE(c.is_deleted, false) = false
+    `,
+    [input.from, input.to, input.picFilter, input.team],
   );
+  const leadCount = new Set(result.rows.map((row: any) => row.lead_id)).size;
+  const carIds = result.rows.map((row: any) => row.car_id).filter(Boolean);
+  const grouped = carIds.length > 0 ? await biddings.listByCarsGrouped(carIds) : {};
+  let bids = 0;
+  for (const carId of carIds) {
+    for (const bid of grouped[carId] ?? []) {
+      if (Number(bid?.price ?? 0) > REAL_BID_MIN) bids += 1;
+    }
+  }
+  return buildHanoiImageLeadBidSummary({ leadsWithImages: leadCount, bids });
 }
 
 export async function GET(request: Request) {
@@ -493,11 +232,12 @@ export async function GET(request: Request) {
     if (searchParams.get("options") === "pic") {
       return NextResponse.json({ picOptions: picOptionRows.rows });
     }
-    const detailedSaleCyclePromise = optionalHanoiChart(
-      "detailed sale cycle",
-      readDetailedSaleCycleSummary({ from, to, team, picFilter }),
-      emptyDetailedSaleCycle(),
+    const dailyBookingsPromise = optionalHanoiChart(
+      "daily bookings",
+      readDailyBookingRows({ from, to, team, picFilter }),
+      [],
     );
+    const imageLeadBidsPromise = optionalHanoiChart("image lead bids", readImageLeadBids({ from, to, team, picFilter }), null);
     const snapshotSummaries = await readSnapshotSummaries({ from, to, team, pic });
 
     const totals = await vucarV2Query(
@@ -1249,7 +989,7 @@ export async function GET(request: Request) {
       reason: typeof delayReasonRow.reason === "string" ? delayReasonRow.reason : null,
       count: toNumber(delayReasonRow.count),
     }));
-    const detailedSaleCycle = await detailedSaleCyclePromise;
+    const [dailyBookingRows, imageLeadBids] = await Promise.all([dailyBookingsPromise, imageLeadBidsPromise]);
 
     const totalFunnel = buildHanoiTotalFunnel({
       totalLeads: toNumber(row.totalLeads),
@@ -1270,7 +1010,6 @@ export async function GET(request: Request) {
         expectedRevenue: toNumber(row.overviewExpectedRevenue),
       }),
       speedToClose: buildHanoiSpeedToCloseMetrics(speedMetrics),
-      detailedSaleCycle,
       workStageChart: snapshotSummaries
         ? buildHanoiWorkStageChart(snapshotSummaries.stageSummary)
         : { totalLeads: 0, workableLeads: 0, stages: [] },
@@ -1291,6 +1030,7 @@ export async function GET(request: Request) {
         failedLeads: toNumber(row.cohortFailedLeads),
       }),
       targetFunnel: buildHanoiTargetFunnel({
+        totalLeads: toNumber(row.totalLeads),
         targetLeads: toNumber(row.targetLeads),
         targetLeadsWithImages: toNumber(row.targetLeadsWithImages),
         targetInspectionBookings: toNumber(row.targetInspectionBookings),
@@ -1313,6 +1053,8 @@ export async function GET(request: Request) {
         to,
         rows: dailyZaloCallRows,
       }),
+      dailyBookings: buildHanoiDailyBookingChart({ from, to, rows: dailyBookingRows }),
+      imageLeadBids,
       leadQualityByDay: dailyCharts.leadQualityByDay,
       leadQualityError,
       winCasesByDay: dailyCharts.winCasesByDay,
