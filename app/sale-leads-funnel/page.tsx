@@ -70,6 +70,7 @@ interface FunnelLead {
   carName: string;
   location: string | null;
   southernLead: boolean;
+  undefinedLead: boolean;
   createdAt: string;
   crmStage: string;
   workStage: SaleLeadWorkStage;
@@ -115,6 +116,7 @@ interface FunnelResponse {
     underTwoBids?: boolean;
     hotLead?: boolean;
     southernLead?: boolean;
+    undefinedLead?: boolean;
     needsInspectionBooking?: boolean;
     needsPostInspectionQuote?: boolean;
     filterOrder: string[];
@@ -139,6 +141,7 @@ interface FunnelResponse {
     underTwoBids: number;
     hotLead: number;
     southernLead: number;
+    undefinedLead: number;
     needsInspectionBooking: number;
     needsPostInspectionQuote: number;
   };
@@ -154,6 +157,7 @@ interface FunnelResponse {
       underTwoBids: number;
       hotLead: number;
       southernLead: number;
+      undefinedLead: number;
       needsInspectionBooking: number;
       needsPostInspectionQuote: number;
     };
@@ -265,6 +269,7 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
 
 type StatusFilterKey =
   | "southernLead"
+  | "undefinedLead"
   | "hasImages"
   | "noImages"
   | "inspected"
@@ -276,6 +281,7 @@ type StatusFilterKey =
 
 const STATUS_FILTER_KEYS: StatusFilterKey[] = [
   "southernLead",
+  "undefinedLead",
   "hasImages",
   "noImages",
   "inspected",
@@ -1839,6 +1845,7 @@ function FunnelClient() {
     const underTwoBids = searchParams.get("underTwoBids") === "true";
     const hotLead = searchParams.get("hotLead") === "true";
     const southernLead = searchParams.get("southernLead") === "true";
+    const undefinedLead = searchParams.get("undefinedLead") === "true";
     const needsInspectionBooking = searchParams.get("needsInspectionBooking") === "true";
     const needsPostInspectionQuote = searchParams.get("needsPostInspectionQuote") === "true";
     const filterOrder = searchParams.get("filterOrder")?.split(",").filter(Boolean) ?? [];
@@ -1860,6 +1867,7 @@ function FunnelClient() {
       underTwoBids,
       hotLead,
       southernLead,
+      undefinedLead,
       needsInspectionBooking,
       needsPostInspectionQuote,
       filterOrder,
@@ -1948,6 +1956,8 @@ function FunnelClient() {
     else next.delete("hotLead");
     if (merged.southernLead) next.set("southernLead", "true");
     else next.delete("southernLead");
+    if (merged.undefinedLead) next.set("undefinedLead", "true");
+    else next.delete("undefinedLead");
     if (merged.needsInspectionBooking) next.set("needsInspectionBooking", "true");
     else next.delete("needsInspectionBooking");
     if (merged.needsPostInspectionQuote) next.set("needsPostInspectionQuote", "true");
@@ -1999,6 +2009,7 @@ function FunnelClient() {
     if (params.underTwoBids) url.searchParams.set("underTwoBids", "true");
     if (params.hotLead) url.searchParams.set("hotLead", "true");
     if (params.southernLead) url.searchParams.set("southernLead", "true");
+    if (params.undefinedLead) url.searchParams.set("undefinedLead", "true");
     if (params.needsInspectionBooking) url.searchParams.set("needsInspectionBooking", "true");
     if (params.needsPostInspectionQuote) url.searchParams.set("needsPostInspectionQuote", "true");
     setCsvParam(url.searchParams, "filterOrder", params.filterOrder);
@@ -2068,6 +2079,7 @@ function FunnelClient() {
     params.underTwoBids,
     params.hotLead,
     params.southernLead,
+    params.undefinedLead,
     params.needsInspectionBooking,
     params.needsPostInspectionQuote,
     params.filterOrder.join(","),
@@ -2531,6 +2543,7 @@ function FunnelClient() {
                     !params.underTwoBids &&
                     !params.hotLead &&
                     !params.southernLead &&
+                    !params.undefinedLead &&
                     !params.needsInspectionBooking &&
                     !params.needsPostInspectionQuote
                   }
@@ -2547,6 +2560,7 @@ function FunnelClient() {
                       underTwoBids: false,
                       hotLead: false,
                       southernLead: false,
+                      undefinedLead: false,
                       needsInspectionBooking: false,
                       needsPostInspectionQuote: false,
                       filterOrder: [],
@@ -2558,7 +2572,7 @@ function FunnelClient() {
               <section className="space-y-1.5 rounded-lg border border-slate-200/80 bg-white p-2.5 shadow-sm shadow-slate-200/50">
                 <FilterTitle>Trạng thái</FilterTitle>
                 <div className="grid grid-cols-2 gap-1.5">
-                  <div className="col-span-2 grid">
+                  <div className="grid">
                     <CountFilterButton
                       active={params.southernLead}
                       label="Lead miền Nam"
@@ -2566,6 +2580,16 @@ function FunnelClient() {
                       tone="teal"
                       title="Vị trí xe thuộc Đông Nam Bộ hoặc Tây Nam Bộ, không phụ thuộc team sale."
                       onClick={() => toggleStatus("southernLead")}
+                    />
+                  </div>
+                  <div className="grid">
+                    <CountFilterButton
+                      active={params.undefinedLead}
+                      label="Chưa define"
+                      count={data?.facets?.status.undefinedLead ?? data?.counts?.undefinedLead ?? 0}
+                      tone="teal"
+                      title="Stage CRM là UNDEFINED hoặc lead chưa được phân loại qualified (Undefined)."
+                      onClick={() => toggleStatus("undefinedLead")}
                     />
                   </div>
                   <CountFilterButton

@@ -693,6 +693,10 @@ async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Prom
         createdAt: row.car_created_at ?? row.lead_created_at,
         crmStage: row.stage || "UNDEFINED",
         qualified: row.qualified || "UNDEFINED_QUALIFIED",
+        // CRM stage or lead quality not set yet.
+        undefinedLead:
+          String(row.stage || "UNDEFINED").toUpperCase() === "UNDEFINED" ||
+          String(row.qualified || "UNDEFINED_QUALIFIED").toUpperCase() === "UNDEFINED_QUALIFIED",
         firstPaymentDate: row.first_payment_date ? String(row.first_payment_date) : null,
         workStage,
         priceCustomer,
@@ -799,6 +803,7 @@ export async function GET(request: Request) {
     const underTwoBidsFilter = parseBooleanFilter(searchParams.get("underTwoBids"));
     const hotLeadFilter = parseBooleanFilter(searchParams.get("hotLead"));
     const southernLeadFilter = parseBooleanFilter(searchParams.get("southernLead"));
+    const undefinedLeadFilter = parseBooleanFilter(searchParams.get("undefinedLead"));
     const needsInspectionBookingFilter = parseBooleanFilter(searchParams.get("needsInspectionBooking"));
     const needsPostInspectionQuoteFilter = parseBooleanFilter(searchParams.get("needsPostInspectionQuote"));
     const filterOrder = parseCsv(searchParams.get("filterOrder"));
@@ -864,6 +869,7 @@ export async function GET(request: Request) {
       underTwoBids: underTwoBidsFilter,
       hotLead: hotLeadFilter,
       southernLead: southernLeadFilter,
+      undefinedLead: undefinedLeadFilter,
       needsInspectionBooking: needsInspectionBookingFilter,
       needsPostInspectionQuote: needsPostInspectionQuoteFilter,
     };
@@ -897,6 +903,7 @@ export async function GET(request: Request) {
         underTwoBids: underTwoBidsFilter,
         hotLead: hotLeadFilter,
         southernLead: southernLeadFilter,
+        undefinedLead: undefinedLeadFilter,
         needsInspectionBooking: needsInspectionBookingFilter,
         needsPostInspectionQuote: needsPostInspectionQuoteFilter,
         filterOrder,

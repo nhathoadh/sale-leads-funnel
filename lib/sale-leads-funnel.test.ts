@@ -774,7 +774,7 @@ describe("calculateGapPercent", () => {
 describe("sale lead list filters", () => {
   const rows = [
     { workStage: "need_contact", gapBucket: "lt5", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: false, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
-    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: true, needsPostInspectionQuote: false },
+    { workStage: "need_images", gapBucket: "no_price", hasImages: true, inspected: false, noHumanTouch: false, underTwoBids: false, hotLead: false, needsInspectionBooking: true, needsPostInspectionQuote: false, undefinedLead: true },
     { workStage: "need_quote", gapBucket: "5_10", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: true, hotLead: true, needsInspectionBooking: false, needsPostInspectionQuote: true },
     { workStage: "follow_up_after_quote", gapBucket: "lt5", hasImages: true, inspected: true, noHumanTouch: false, underTwoBids: false, hotLead: true, needsInspectionBooking: false, needsPostInspectionQuote: false },
     { workStage: "failed", gapBucket: "gt10", hasImages: false, inspected: false, noHumanTouch: true, underTwoBids: true, hotLead: false, needsInspectionBooking: false, needsPostInspectionQuote: false },
@@ -799,6 +799,7 @@ describe("sale lead list filters", () => {
     expect(filterSaleLeadRows(rows, { hotLead: true })).toEqual([rows[2], rows[3]]);
     expect(filterSaleLeadRows(rows, { needsInspectionBooking: true })).toEqual([rows[1]]);
     expect(filterSaleLeadRows(rows, { needsPostInspectionQuote: true })).toEqual([rows[2]]);
+    expect(filterSaleLeadRows(rows, { undefinedLead: true })).toEqual([rows[1]]);
   });
 
   it("counts filter buttons from the full unfiltered row set", () => {
@@ -828,6 +829,7 @@ describe("sale lead list filters", () => {
       underTwoBids: 2,
       hotLead: 2,
       southernLead: 0,
+      undefinedLead: 1,
       needsInspectionBooking: 1,
       needsPostInspectionQuote: 1,
     });

@@ -70,6 +70,7 @@ export function normalizeSaleLeadTeamFilter(value: string | null | undefined): S
 
 export interface SaleLeadFilterableRow {
   southernLead?: boolean;
+  undefinedLead?: boolean;
   workStage: SaleLeadWorkStage;
   gapBucket: SaleLeadGapBucket;
   hasImages: boolean;
@@ -83,6 +84,7 @@ export interface SaleLeadFilterableRow {
 
 export interface SaleLeadListFilters {
   southernLead?: boolean;
+  undefinedLead?: boolean;
   stages?: SaleLeadWorkStage[];
   gaps?: SaleLeadGapBucket[];
   hasImages?: boolean;
@@ -97,6 +99,7 @@ export interface SaleLeadListFilters {
 
 export interface SaleLeadFilterCounts {
   southernLead: number;
+  undefinedLead: number;
   total: number;
   stages: Record<SaleLeadWorkStage, number>;
   gaps: Record<SaleLeadGapBucket, number>;
@@ -116,6 +119,7 @@ export interface SaleLeadFilterFacets {
   gaps: Record<SaleLeadGapBucket, number>;
   status: {
     southernLead: number;
+    undefinedLead: number;
     hasImages: number;
     noImages: number;
     inspected: number;
@@ -135,6 +139,7 @@ export interface SaleLeadFilterFacets {
 export type SaleLeadFilterGroup = "status" | "stage" | "gap";
 export type SaleLeadStatusFilterKey =
   | "southernLead"
+  | "undefinedLead"
   | "hasImages"
   | "noImages"
   | "inspected"
@@ -823,6 +828,7 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
     const underTwoBidsOk = filters.underTwoBids === undefined || row.underTwoBids === filters.underTwoBids;
     const hotLeadOk = filters.hotLead === undefined || row.hotLead === filters.hotLead;
     const southernLeadOk = filters.southernLead === undefined || Boolean(row.southernLead) === filters.southernLead;
+    const undefinedLeadOk = filters.undefinedLead === undefined || Boolean(row.undefinedLead) === filters.undefinedLead;
     const inspectionBookingOk =
       filters.needsInspectionBooking === undefined || row.needsInspectionBooking === filters.needsInspectionBooking;
     const postInspectionQuoteOk =
@@ -837,6 +843,7 @@ export function filterSaleLeadRows<T extends SaleLeadFilterableRow>(rows: T[], f
       underTwoBidsOk &&
       hotLeadOk &&
       southernLeadOk &&
+      undefinedLeadOk &&
       inspectionBookingOk &&
       postInspectionQuoteOk
     );
@@ -853,6 +860,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
   let underTwoBids = 0;
   let hotLead = 0;
   let southernLead = 0;
+  let undefinedLead = 0;
   let needsInspectionBooking = 0;
   let needsPostInspectionQuote = 0;
   for (const row of rows) {
@@ -864,6 +872,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     if (row.underTwoBids) underTwoBids += 1;
     if (row.hotLead) hotLead += 1;
     if (row.southernLead) southernLead += 1;
+    if (row.undefinedLead) undefinedLead += 1;
     if (row.needsInspectionBooking) needsInspectionBooking += 1;
     if (row.needsPostInspectionQuote) needsPostInspectionQuote += 1;
   }
@@ -879,6 +888,7 @@ export function getSaleLeadFilterCounts(rows: SaleLeadFilterableRow[]): SaleLead
     underTwoBids,
     hotLead,
     southernLead,
+    undefinedLead,
     needsInspectionBooking,
     needsPostInspectionQuote,
   };
@@ -893,6 +903,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
     underTwoBids: filters.underTwoBids,
     hotLead: filters.hotLead,
     southernLead: filters.southernLead,
+    undefinedLead: filters.undefinedLead,
     needsInspectionBooking: filters.needsInspectionBooking,
     needsPostInspectionQuote: filters.needsPostInspectionQuote,
   });
@@ -911,6 +922,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
       underTwoBids: allCounts.underTwoBids,
       hotLead: allCounts.hotLead,
       southernLead: allCounts.southernLead,
+      undefinedLead: allCounts.undefinedLead,
       needsInspectionBooking: allCounts.needsInspectionBooking,
       needsPostInspectionQuote: allCounts.needsPostInspectionQuote,
     },
@@ -924,6 +936,7 @@ export function getSaleLeadFilterFacets(rows: SaleLeadFilterableRow[], filters: 
 
 const STATUS_FILTER_KEYS: SaleLeadStatusFilterKey[] = [
   "southernLead",
+  "undefinedLead",
   "hasImages",
   "noImages",
   "inspected",
@@ -1044,6 +1057,7 @@ export function getOrderedSaleLeadFilterFacets(
       underTwoBids: statusCounts.underTwoBids,
       hotLead: statusCounts.hotLead,
       southernLead: statusCounts.southernLead,
+      undefinedLead: statusCounts.undefinedLead,
       needsInspectionBooking: statusCounts.needsInspectionBooking,
       needsPostInspectionQuote: statusCounts.needsPostInspectionQuote,
     },
