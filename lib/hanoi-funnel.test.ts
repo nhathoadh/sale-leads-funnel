@@ -421,8 +421,10 @@ describe("hanoi funnel metrics", () => {
         isDeactivated: false,
         totalLeads: 10,
         leadsWithImages: 8,
+        definedLeads: 5,
         inspectionBookings: 1,
         wins: 2,
+        expectedRevenue: 40_000_000,
       },
       {
         userId: "2",
@@ -431,8 +433,10 @@ describe("hanoi funnel metrics", () => {
         isDeactivated: false,
         totalLeads: 20,
         leadsWithImages: 5,
+        definedLeads: 15,
         inspectionBookings: 6,
         wins: 1,
+        expectedRevenue: 25_000_000,
       },
       {
         userId: "3",
@@ -441,8 +445,10 @@ describe("hanoi funnel metrics", () => {
         isDeactivated: false,
         totalLeads: 5,
         leadsWithImages: 5,
+        definedLeads: 1,
         inspectionBookings: 2,
         wins: 0,
+        expectedRevenue: 0,
       },
     ];
 
@@ -454,6 +460,16 @@ describe("hanoi funnel metrics", () => {
     expect(sortHanoiSaleRows(rows, { key: "inspectionRate", direction: "asc" }).map((row) => row.displayName)).toEqual([
       "An",
       "Binh",
+      "Cuong",
+    ]);
+    expect(sortHanoiSaleRows(rows, { key: "definedRate", direction: "desc" }).map((row) => row.displayName)).toEqual([
+      "Binh",
+      "An",
+      "Cuong",
+    ]);
+    expect(sortHanoiSaleRows(rows, { key: "revenuePerCar", direction: "desc" }).map((row) => row.displayName)).toEqual([
+      "Binh",
+      "An",
       "Cuong",
     ]);
   });

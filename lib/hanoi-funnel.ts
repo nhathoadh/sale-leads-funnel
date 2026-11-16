@@ -221,8 +221,10 @@ export type HanoiSaleSortKey =
   | "imageRate"
   | "inspectionBookings"
   | "inspectionRate"
+  | "definedRate"
   | "wins"
-  | "conversionRate";
+  | "conversionRate"
+  | "revenuePerCar";
 export type HanoiSortDirection = "asc" | "desc";
 
 export interface HanoiFunnelResponse {
@@ -264,8 +266,12 @@ export interface HanoiFunnelResponse {
     isDeactivated: boolean;
     totalLeads: number;
     leadsWithImages: number;
+    /** Leads with a car whose CRM stage and qualified status are both set. */
+    definedLeads: number;
     inspectionBookings: number;
     wins: number;
+    /** Seller + buyer commission of cars paid in the period. */
+    expectedRevenue: number;
   }>;
 }
 
@@ -718,6 +724,10 @@ function saleSortValue(row: HanoiSaleRow, key: HanoiSaleSortKey): string | numbe
       return ratio(row.inspectionBookings, row.totalLeads);
     case "conversionRate":
       return ratio(row.wins, row.totalLeads);
+    case "definedRate":
+      return ratio(row.definedLeads, row.totalLeads);
+    case "revenuePerCar":
+      return ratio(row.expectedRevenue, row.wins);
     default:
       return row[key];
   }

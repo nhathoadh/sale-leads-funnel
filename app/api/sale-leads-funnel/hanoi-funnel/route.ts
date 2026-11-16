@@ -637,14 +637,29 @@ export async function GET(request: Request) {
           WHERE ${teamMembershipCondition(4)}
             AND ($3::uuid[] IS NULL OR u.id = ANY($3::uuid[]))
         ),
+        latest_status AS (
+          SELECT DISTINCT ON (ss.car_id)
+            ss.car_id,
+            ss.stage,
+            ss.qualified
+          FROM sale_status ss
+          ORDER BY ss.car_id, ss.updated_at DESC NULLS LAST, ss.created_at DESC NULLS LAST
+        ),
         lead_base AS (
           SELECT
             m.pic_id,
             l.id AS lead_id,
-            bool_or(c.id IS NOT NULL AND COALESCE(c.is_deleted, false) = false AND c.additional_images IS NOT NULL) AS has_image
+            bool_or(c.id IS NOT NULL AND COALESCE(c.is_deleted, false) = false AND c.additional_images IS NOT NULL) AS has_image,
+            bool_or(
+              c.id IS NOT NULL
+              AND COALESCE(c.is_deleted, false) = false
+              AND UPPER(COALESCE(ls.stage::text, 'UNDEFINED')) <> 'UNDEFINED'
+              AND UPPER(COALESCE(ls.qualified::text, 'UNDEFINED_QUALIFIED')) <> 'UNDEFINED_QUALIFIED'
+            ) AS is_defined
           FROM members m
           JOIN leads l ON l.pic_id = m.pic_id
           LEFT JOIN cars c ON c.lead_id = l.id
+          LEFT JOIN latest_status ls ON ls.car_id = c.id
           WHERE (l.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
           GROUP BY m.pic_id, l.id
         ),
@@ -652,7 +667,8 @@ export async function GET(request: Request) {
           SELECT
             pic_id,
             COUNT(DISTINCT lead_id)::int AS total_leads,
-            COUNT(DISTINCT lead_id) FILTER (WHERE has_image)::int AS leads_with_images
+            COUNT(DISTINCT lead_id) FILTER (WHERE has_image)::int AS leads_with_images,
+            COUNT(DISTINCT lead_id) FILTER (WHERE is_defined)::int AS defined_leads
           FROM lead_base
           GROUP BY pic_id
         ),
@@ -666,14 +682,25 @@ export async function GET(request: Request) {
             AND (b.time AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
           GROUP BY m.pic_id
         ),
-        win_total AS (
-          SELECT m.pic_id, COUNT(DISTINCT c.id)::int AS wins
+        win_deals AS (
+          SELECT DISTINCT ON (c.id)
+            m.pic_id,
+            c.id AS car_id,
+            (COALESCE(ss.comission_seller, 0) + COALESCE(ss.comission_buyer, 0))::numeric AS expected_revenue
           FROM members m
           JOIN leads l ON l.pic_id = m.pic_id
           JOIN cars c ON c.lead_id = l.id AND COALESCE(c.is_deleted, false) = false
           JOIN sale_status ss ON ss.car_id = c.id
           WHERE (ss.first_payment_date AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date
-          GROUP BY m.pic_id
+          ORDER BY c.id, ss.first_payment_date DESC NULLS LAST, ss.updated_at DESC NULLS LAST
+        ),
+        win_total AS (
+          SELECT
+            pic_id,
+            COUNT(*)::int AS wins,
+            COALESCE(SUM(expected_revenue), 0)::numeric AS expected_revenue
+          FROM win_deals
+          GROUP BY pic_id
         )
         SELECT
           m.pic_id::text AS "userId",
@@ -682,8 +709,10 @@ export async function GET(request: Request) {
           m.is_deactivated AS "isDeactivated",
           COALESCE(la.total_leads, 0)::int AS "totalLeads",
           COALESCE(la.leads_with_images, 0)::int AS "leadsWithImages",
+          COALESCE(la.defined_leads, 0)::int AS "definedLeads",
           COALESCE(bt.inspection_bookings, 0)::int AS "inspectionBookings",
-          COALESCE(wt.wins, 0)::int AS "wins"
+          COALESCE(wt.wins, 0)::int AS "wins",
+          COALESCE(wt.expected_revenue, 0)::numeric AS "expectedRevenue"
         FROM members m
         LEFT JOIN lead_agg la ON la.pic_id = m.pic_id
         LEFT JOIN booking_total bt ON bt.pic_id = m.pic_id
@@ -1060,7 +1089,18 @@ export async function GET(request: Request) {
       winCasesByDay: dailyCharts.winCasesByDay,
       failureReasons: buildHanoiFailureReasonFunnels(failureReasons),
       delayReasons: buildHanoiDelayReasonChart(delayReasons),
-      byUser: byUserRows.rows,
+      byUser: byUserRows.rows.map((row) => ({
+        userId: String(row.userId),
+        userName: String(row.userName ?? ""),
+        displayName: String(row.displayName ?? ""),
+        isDeactivated: Boolean(row.isDeactivated),
+        totalLeads: toNumber(row.totalLeads),
+        leadsWithImages: toNumber(row.leadsWithImages),
+        definedLeads: toNumber(row.definedLeads),
+        inspectionBookings: toNumber(row.inspectionBookings),
+        wins: toNumber(row.wins),
+        expectedRevenue: toNumber(row.expectedRevenue),
+      })),
     };
 
     return NextResponse.json(response);

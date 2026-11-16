@@ -1564,6 +1564,15 @@ function percentRatio(numerator: number, denominator: number) {
   return denominator > 0 ? (numerator / denominator) * 100 : 0;
 }
 
+function HanoiRateCell({ rate, count }: { rate: number; count: number }) {
+  return (
+    <td className="px-4 py-3 text-right">
+      <span className="font-medium text-slate-900">{formatPercentFixed(rate)}</span>
+      <span className="ml-1.5 text-xs text-slate-400">{formatPlainNumber(count)}</span>
+    </td>
+  );
+}
+
 function HanoiPicPerformanceTable({ rows }: { rows: HanoiFunnelResponse["byUser"] }) {
   const [sort, setSort] = useState<{ key: HanoiSaleSortKey; direction: HanoiSortDirection }>({
     key: "totalLeads",
@@ -1580,13 +1589,19 @@ function HanoiPicPerformanceTable({ rows }: { rows: HanoiFunnelResponse["byUser"
   const columns: Array<{ key: HanoiSaleSortKey; label: string; align?: "left" | "right" }> = [
     { key: "displayName", label: "Sale", align: "left" },
     { key: "totalLeads", label: "Total" },
-    { key: "leadsWithImages", label: "Có ảnh" },
-    { key: "imageRate", label: "% Có ảnh" },
-    { key: "inspectionBookings", label: "Total KĐ" },
-    { key: "inspectionRate", label: "% KĐ/Total" },
+    { key: "definedRate", label: "Define" },
+    { key: "imageRate", label: "Có ảnh" },
+    { key: "inspectionRate", label: "Kiểm định" },
     { key: "wins", label: "Win tổng" },
     { key: "conversionRate", label: "% CVR/Total" },
+    { key: "revenuePerCar", label: "Rev/xe" },
   ];
+  const columnTitles: Partial<Record<HanoiSaleSortKey, string>> = {
+    imageRate: "Tỷ lệ lead có ảnh trên tổng lead. Số nhỏ là số lead có ảnh.",
+    inspectionRate: "Tỷ lệ lịch kiểm định trên tổng lead. Số nhỏ là số lịch kiểm định.",
+    definedRate: "Tỷ lệ lead đã có stage CRM và đã phân loại qualified. Số nhỏ là số lead đã define.",
+    revenuePerCar: "Doanh thu dự kiến (hoa hồng bán + mua) chia số xe win trong kỳ.",
+  };
 
   return (
     <section className="overflow-hidden rounded-lg border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
@@ -1594,13 +1609,14 @@ function HanoiPicPerformanceTable({ rows }: { rows: HanoiFunnelResponse["byUser"
         <h2 className="text-sm font-semibold">Đối chiếu theo sale</h2>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1040px] text-sm">
+        <table className="w-full min-w-[960px] text-sm">
           <thead className="bg-slate-50 text-xs font-semibold text-slate-500">
             <tr>
               {columns.map((column) => (
                 <th key={column.key} className={classNames("px-4 py-3", column.align === "left" ? "text-left" : "text-right")}>
                   <button
                     type="button"
+                    title={columnTitles[column.key]}
                     onClick={() => toggleSort(column.key)}
                     className={classNames(
                       "inline-flex items-center gap-1 rounded px-1 py-0.5 transition hover:bg-white hover:text-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-100",
@@ -1620,17 +1636,19 @@ function HanoiPicPerformanceTable({ rows }: { rows: HanoiFunnelResponse["byUser"
               const imageRate = percentRatio(row.leadsWithImages, row.totalLeads);
               const inspectionRate = percentRatio(row.inspectionBookings, row.totalLeads);
               const conversionRate = percentRatio(row.wins, row.totalLeads);
+              const definedRate = percentRatio(row.definedLeads, row.totalLeads);
+              const revenuePerCar = row.wins > 0 ? row.expectedRevenue / row.wins : 0;
 
               return (
                 <tr key={row.userId} className="border-t border-slate-100">
                   <td className="px-4 py-3 font-semibold text-slate-700">{row.displayName}</td>
                   <td className="px-4 py-3 text-right font-medium">{formatPlainNumber(row.totalLeads)}</td>
-                  <td className="px-4 py-3 text-right font-medium">{formatPlainNumber(row.leadsWithImages)}</td>
-                  <td className="px-4 py-3 text-right font-medium">{formatPercentFixed(imageRate)}</td>
-                  <td className="px-4 py-3 text-right font-medium">{formatPlainNumber(row.inspectionBookings)}</td>
-                  <td className="px-4 py-3 text-right font-medium">{formatPercentFixed(inspectionRate)}</td>
+                  <HanoiRateCell rate={definedRate} count={row.definedLeads} />
+                  <HanoiRateCell rate={imageRate} count={row.leadsWithImages} />
+                  <HanoiRateCell rate={inspectionRate} count={row.inspectionBookings} />
                   <td className="px-4 py-3 text-right font-medium">{formatPlainNumber(row.wins)}</td>
                   <td className="px-4 py-3 text-right font-medium">{formatPercentFixed(conversionRate)}</td>
+                  <td className="px-4 py-3 text-right font-medium">{formatMillionOneDecimal(revenuePerCar)}</td>
                 </tr>
               );
             })}
