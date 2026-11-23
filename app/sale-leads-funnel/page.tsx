@@ -1106,6 +1106,7 @@ function HanoiGapStructureSection({
 
 type HanoiDailyBarSeries = { key: string; label: string; color: string };
 type HanoiDailyBarRow = { day: string; values: Record<string, number>; detail?: ReactNode };
+type HanoiDailyBarSelection = { day: string; key: string | null };
 
 /** Daily bars that always fit their card: no horizontal scroll, thinned day labels, tap or hover for the tooltip. */
 function HanoiDailyBarChart({
@@ -1115,6 +1116,10 @@ function HanoiDailyBarChart({
   rows,
   description,
   tall = false,
+  segmentDetail,
+  selected,
+  onSelect,
+  footer,
 }: {
   title: string;
   description?: string;
@@ -1122,8 +1127,15 @@ function HanoiDailyBarChart({
   series: readonly HanoiDailyBarSeries[];
   rows: HanoiDailyBarRow[];
   tall?: boolean;
+  /** Extra tooltip content for the hovered day, and the hovered series when the pointer is on a segment. */
+  segmentDetail?: (index: number, key: string | null) => ReactNode;
+  selected?: HanoiDailyBarSelection | null;
+  /** Click on a segment selects that day and series; click elsewhere on the bar selects the whole day. */
+  onSelect?: (selection: HanoiDailyBarSelection) => void;
+  footer?: ReactNode;
 }) {
   const [active, setActive] = useState<number | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const totals = rows.map((row) => series.reduce((sum, item) => sum + (row.values[item.key] ?? 0), 0));
   const max = Math.max(1, ...totals);
   const labelEvery = Math.max(1, Math.ceil(rows.length / 7));
@@ -1159,7 +1171,13 @@ function HanoiDailyBarChart({
               <span key={tick}>{Math.round(max * tick)}</span>
             ))}
           </div>
-          <div className={classNames("relative border-b border-slate-200", plotHeight)} onMouseLeave={() => setActive(null)}>
+          <div
+            className={classNames("relative border-b border-slate-200", plotHeight)}
+            onMouseLeave={() => {
+              setActive(null);
+              setActiveKey(null);
+            }}
+          >
             <div className="absolute inset-0 flex flex-col justify-between">
               {[0, 1, 2].map((line) => (
                 <span key={line} className="border-t border-dashed border-slate-100" />
@@ -1172,21 +1190,43 @@ function HanoiDailyBarChart({
                   type="button"
                   className="flex h-full min-w-0 flex-1 items-end justify-center rounded-sm hover:bg-slate-50 focus:outline-none"
                   aria-label={`${formatChartDay(row.day)}: ${formatPlainNumber(totals[index])} ${unit}`}
-                  onMouseEnter={() => setActive(index)}
+                  onMouseEnter={() => {
+                    setActive(index);
+                    setActiveKey(null);
+                  }}
                   onFocus={() => setActive(index)}
-                  onClick={() => setActive(index)}
+                  onClick={() => {
+                    setActive(index);
+                    if (onSelect && totals[index] > 0) onSelect({ day: row.day, key: null });
+                  }}
                 >
                   <span
                     className={classNames(
                       "flex w-full max-w-7 flex-col-reverse overflow-hidden rounded-t-sm",
-                      active === index && "opacity-80 ring-2 ring-slate-300",
+                      active === index && !activeKey && "opacity-80 ring-2 ring-slate-300",
+                      selected?.day === row.day && !selected.key && "ring-2 ring-sky-400",
                     )}
                     style={{ height: `${(totals[index] / max) * 100}%`, minHeight: totals[index] > 0 ? 3 : 0 }}
                   >
                     {series.map((item) => (
                       <span
                         key={item.key}
+                        className={classNames(
+                          onSelect && "cursor-pointer",
+                          active === index && activeKey === item.key && "brightness-90",
+                          selected?.day === row.day && selected.key === item.key && "outline outline-2 -outline-offset-2 outline-sky-500",
+                        )}
                         style={{ flexGrow: row.values[item.key] ?? 0, flexBasis: 0, backgroundColor: item.color }}
+                        onMouseEnter={() => {
+                          setActive(index);
+                          setActiveKey(item.key);
+                        }}
+                        onClick={(event) => {
+                          if (!onSelect || !(row.values[item.key] ?? 0)) return;
+                          event.stopPropagation();
+                          setActive(index);
+                          onSelect({ day: row.day, key: item.key });
+                        }}
                       />
                     ))}
                   </span>
@@ -1207,7 +1247,13 @@ function HanoiDailyBarChart({
                 {series.length > 1 ? (
                   <div className="mt-1 space-y-0.5">
                     {series.map((item) => (
-                      <div key={item.key} className="flex items-center justify-between gap-3">
+                      <div
+                        key={item.key}
+                        className={classNames(
+                          "flex items-center justify-between gap-3",
+                          activeKey && activeKey !== item.key && "opacity-50",
+                        )}
+                      >
                         <span className="inline-flex items-center gap-1.5">
                           <span className="size-2 rounded-full" style={{ backgroundColor: item.color }} />
                           {item.label}
@@ -1218,6 +1264,7 @@ function HanoiDailyBarChart({
                   </div>
                 ) : null}
                 {activeRow.detail}
+                {segmentDetail ? segmentDetail(active, activeKey) : null}
               </div>
             ) : null}
           </div>
@@ -1231,6 +1278,7 @@ function HanoiDailyBarChart({
           </div>
         </div>
       </div>
+      {footer}
     </section>
   );
 }
@@ -1242,10 +1290,31 @@ const LEAD_QUALITY_SERIES = [
   { key: "undefinedQualified", label: "Undefined", color: "#ef4444" },
 ] as const;
 
+const LEAD_QUALITY_TOOLTIP_ROWS = 6;
+const CRM_QUALIFIED_LABELS: Record<string, string> = {
+  STRONG_QUALIFIED: "Strong",
+  WEAK_QUALIFIED: "Weak",
+  NON_QUALIFIED: "Non",
+  TEST: "Test",
+  UNDEFINED_QUALIFIED: "Undefined",
+};
+
+function leadQualityLeadsFor(row: HanoiFunnelResponse["leadQualityByDay"][number] | undefined, key: string | null) {
+  if (!row) return [];
+  return key ? row.leads.filter((lead) => lead.category === key) : row.leads;
+}
+
 function HanoiLeadQualityByDayChart({ rows }: { rows: HanoiFunnelResponse["leadQualityByDay"] }) {
+  const [selected, setSelected] = useState<HanoiDailyBarSelection | null>(null);
+  useEffect(() => setSelected(null), [rows]);
+  const selectedRow = selected ? rows.find((row) => row.day === selected.day) : undefined;
+  const selectedLeads = leadQualityLeadsFor(selectedRow, selected?.key ?? null);
+  const selectedSeries = LEAD_QUALITY_SERIES.find((item) => item.key === selected?.key);
+
   return (
     <HanoiDailyBarChart
       title="Qualified leads theo ngày"
+      description="Non-qualified: CRM đánh Non/Test. Có ảnh: đã có ảnh xe. Xin ảnh: khách đã nhắn lại qua Zalo. Undefined: còn lại. Trỏ để xem lead, bấm để ghim danh sách."
       unit="lead"
       series={LEAD_QUALITY_SERIES}
       tall
@@ -1253,6 +1322,76 @@ function HanoiLeadQualityByDayChart({ rows }: { rows: HanoiFunnelResponse["leadQ
         day: row.day,
         values: Object.fromEntries(LEAD_QUALITY_SERIES.map((item) => [item.key, row[item.key]])),
       }))}
+      selected={selected}
+      onSelect={setSelected}
+      segmentDetail={(index, key) => {
+        if (!key) return <div className="mt-1 text-slate-400">Trỏ vào từng màu để xem lead</div>;
+        const leads = leadQualityLeadsFor(rows[index], key);
+        if (!leads.length) return null;
+        return (
+          <div className="mt-1.5 space-y-0.5 border-t border-slate-100 pt-1.5">
+            {leads.slice(0, LEAD_QUALITY_TOOLTIP_ROWS).map((lead) => (
+              <div key={lead.carId} className="truncate tabular-nums">
+                {[lead.phone, lead.leadName, lead.picName].filter(Boolean).join(" · ")}
+              </div>
+            ))}
+            {leads.length > LEAD_QUALITY_TOOLTIP_ROWS ? (
+              <div className="text-slate-400">và {leads.length - LEAD_QUALITY_TOOLTIP_ROWS} lead khác, bấm để xem hết</div>
+            ) : null}
+          </div>
+        );
+      }}
+      footer={
+        selected && selectedRow ? (
+          <div className="border-t border-slate-100 px-3 py-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2 text-xs font-semibold text-slate-700">
+              <span className="inline-flex items-center gap-1.5">
+                {selectedSeries ? <span className="size-2 rounded-full" style={{ backgroundColor: selectedSeries.color }} /> : null}
+                {formatChartDay(selected.day)} · {selectedSeries?.label ?? "Tất cả"} · {formatPlainNumber(selectedLeads.length)} lead
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                className="rounded-md border border-slate-200 px-2 py-0.5 font-medium text-slate-500 hover:bg-slate-50"
+              >
+                Đóng
+              </button>
+            </div>
+            <div className="max-h-72 overflow-auto">
+              <table className="w-full text-left text-[11px] tabular-nums">
+                <thead className="sticky top-0 bg-white text-slate-400">
+                  <tr>
+                    <th className="py-1 pr-2 font-medium">SĐT</th>
+                    <th className="py-1 pr-2 font-medium">Khách</th>
+                    <th className="py-1 pr-2 font-medium">Xe</th>
+                    <th className="py-1 pr-2 font-medium">PIC</th>
+                    <th className="py-1 pr-2 font-medium">Stage CRM</th>
+                    <th className="py-1 pr-2 font-medium">Qualified CRM</th>
+                    {selected.key ? null : <th className="py-1 font-medium">Nhóm</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedLeads.map((lead) => (
+                    <tr key={lead.carId} className="border-t border-slate-100 text-slate-600">
+                      <td className="py-1 pr-2 whitespace-nowrap">{lead.phone ?? "—"}</td>
+                      <td className="py-1 pr-2">{lead.leadName}</td>
+                      <td className="py-1 pr-2">{lead.carName || "—"}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap">{lead.picName}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap">{lead.crmStage}</td>
+                      <td className="py-1 pr-2 whitespace-nowrap">{CRM_QUALIFIED_LABELS[lead.qualified] ?? lead.qualified}</td>
+                      {selected.key ? null : (
+                        <td className="py-1 whitespace-nowrap">
+                          {LEAD_QUALITY_SERIES.find((item) => item.key === lead.category)?.label}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null
+      }
     />
   );
 }

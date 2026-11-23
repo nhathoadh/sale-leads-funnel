@@ -122,8 +122,43 @@ export interface HanoiWorkablePieSlice extends HanoiWorkableGapSummaryBucket {
 export interface HanoiDailyLeadQualityInput {
   day: string;
   hasImages?: boolean;
-  workStage?: string | null;
+  /** Has a Zalo thread where the customer replied: the point where sale would ask for images. */
+  hasZaloInteraction?: boolean;
   qualified?: string | null;
+  leadId?: string;
+  carId?: string;
+  leadName?: string | null;
+  phone?: string | null;
+  carName?: string | null;
+  picName?: string | null;
+  crmStage?: string | null;
+}
+
+export type HanoiLeadQualityKey = "strongQualified" | "weakQualified" | "nonQualified" | "undefinedQualified";
+
+export interface HanoiLeadQualityLead {
+  leadId: string;
+  carId: string;
+  leadName: string;
+  phone: string | null;
+  carName: string;
+  picName: string;
+  crmStage: string;
+  qualified: string;
+  category: HanoiLeadQualityKey;
+}
+
+/** Order matters: CRM non-qualified wins over images, images over Zalo interaction. */
+export function classifyHanoiLeadQuality(input: {
+  hasImages?: boolean;
+  hasZaloInteraction?: boolean;
+  qualified?: string | null;
+}): HanoiLeadQualityKey {
+  const qualified = String(input.qualified ?? "UNDEFINED_QUALIFIED").trim().toUpperCase();
+  if (qualified === "NON_QUALIFIED" || qualified === "TEST") return "nonQualified";
+  if (input.hasImages) return "strongQualified";
+  if (input.hasZaloInteraction) return "weakQualified";
+  return "undefinedQualified";
 }
 
 export interface HanoiDailyLeadIntakeInput {
@@ -206,6 +241,7 @@ export interface HanoiDailyLeadQualityPoint {
   weakQualified: number;
   nonQualified: number;
   undefinedQualified: number;
+  leads: HanoiLeadQualityLead[];
 }
 
 export interface HanoiDailyWinPoint {
@@ -527,6 +563,7 @@ export function buildHanoiDailyLeadCharts(input: {
       weakQualified: 0,
       nonQualified: 0,
       undefinedQualified: 0,
+      leads: [],
     });
   }
 
@@ -534,22 +571,20 @@ export function buildHanoiDailyLeadCharts(input: {
     const point = leadByDay.get(row.day);
     if (!point) continue;
 
+    const category = classifyHanoiLeadQuality(row);
     point.total += 1;
-    if (row.hasImages) {
-      point.strongQualified += 1;
-      continue;
-    }
-    if (row.workStage === "need_images") {
-      point.weakQualified += 1;
-      continue;
-    }
-
-    const qualified = String(row.qualified ?? "UNDEFINED_QUALIFIED").trim().toUpperCase();
-    if (qualified === "NON_QUALIFIED" || qualified === "TEST") {
-      point.nonQualified += 1;
-    } else {
-      point.undefinedQualified += 1;
-    }
+    point[category] += 1;
+    point.leads.push({
+      leadId: row.leadId ?? "",
+      carId: row.carId ?? "",
+      leadName: row.leadName || "Chưa có tên",
+      phone: row.phone ?? null,
+      carName: row.carName || "",
+      picName: row.picName || "Chưa rõ PIC",
+      crmStage: String(row.crmStage ?? "UNDEFINED").toUpperCase(),
+      qualified: String(row.qualified ?? "UNDEFINED_QUALIFIED").toUpperCase(),
+      category,
+    });
   }
 
   return {

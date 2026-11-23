@@ -30,7 +30,6 @@ import {
   type HanoiSpeedToCloseMetricInput,
 } from "@/lib/hanoi-funnel";
 import {
-  classifySaleLeadStage,
   hasVehicleImagesFromSources,
 } from "@/lib/sale-leads-funnel";
 import {
@@ -725,8 +724,11 @@ export async function GET(request: Request) {
     const dailyLeadRows = await vucarV2Query(
       `
         WITH members AS (
-          SELECT DISTINCT u.id AS pic_id
+          SELECT DISTINCT
+            u.id AS pic_id,
+            COALESCE(NULLIF(BTRIM(s.name), ''), u.user_name) AS pic_name
           FROM users u
+          LEFT JOIN sales s ON s.user_id = u.id
           JOIN team_members tm ON tm.user_id = u.id
           JOIN teams t ON t.id = tm.team_id
           WHERE ${teamMembershipCondition(4)}
@@ -746,6 +748,9 @@ export async function GET(request: Request) {
           c.id::text AS "carId",
           l.id::text AS "leadId",
           l.phone,
+          l.name AS "leadName",
+          m.pic_name AS "picName",
+          NULLIF(CONCAT_WS(' ', c.brand, c.model, c.variant, c.year::text), '') AS "carName",
           c.additional_images AS "additionalImages",
           ls.stage AS "crmStage",
           ls.intention,
@@ -977,21 +982,16 @@ export async function GET(request: Request) {
         });
         return {
           hasImages,
-          workStage: classifySaleLeadStage({
-            crmStage: dailyRow.crmStage,
-            intention: dailyRow.intention,
-            firstPaymentDate: dailyRow.firstPaymentDate ? String(dailyRow.firstPaymentDate) : null,
-            hasZaloChat: Number(zalo?.relationCount ?? 0) > 0,
-            customerMessageCount: Number(zalo?.customerMessageCount ?? 0),
-            hasEnoughImages: hasImages,
-            inInspectionRegion: false,
-            hasInspectionBooking: false,
-            isInspected: false,
-            preInspectionBidCount: 0,
-            postInspectionBidCount: 0,
-          }),
+          hasZaloInteraction: Number(zalo?.relationCount ?? 0) > 0 && Number(zalo?.customerMessageCount ?? 0) > 0,
           day: String(dailyRow.day),
           qualified: dailyRow.qualified ?? null,
+          leadId: String(dailyRow.leadId),
+          carId: String(dailyRow.carId),
+          leadName: dailyRow.leadName ?? null,
+          phone: dailyRow.phone ?? null,
+          carName: dailyRow.carName ?? null,
+          picName: dailyRow.picName ?? null,
+          crmStage: dailyRow.crmStage ?? null,
         };
       }),
       winRows: winDailyRows.rows.map((winRow) => ({

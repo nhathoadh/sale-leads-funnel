@@ -261,11 +261,12 @@ describe("hanoi funnel metrics", () => {
       from: "2026-09-01",
       to: "2026-09-03",
       leadRows: [
-        { day: "2026-09-01", hasImages: true, workStage: "need_quote", qualified: "NON_QUALIFIED" },
-        { day: "2026-09-01", hasImages: false, workStage: "need_images", qualified: "NON_QUALIFIED" },
-        { day: "2026-09-01", qualified: "NON_QUALIFIED" },
-        { day: "2026-09-02", qualified: "TEST" },
-        { day: "2026-09-02", qualified: "UNDEFINED_QUALIFIED" },
+        { day: "2026-09-01", hasImages: true, qualified: "NON_QUALIFIED" },
+        { day: "2026-09-01", hasImages: true, qualified: "WEAK_QUALIFIED", leadId: "l2", carId: "c2", picName: "An" },
+        { day: "2026-09-01", hasZaloInteraction: true, qualified: "WEAK_QUALIFIED" },
+        { day: "2026-09-01", qualified: "STRONG_QUALIFIED" },
+        { day: "2026-09-02", hasZaloInteraction: true, qualified: "TEST" },
+        { day: "2026-09-02", hasZaloInteraction: true, qualified: "UNDEFINED_QUALIFIED" },
       ],
       winRows: [
         { day: "2026-09-01", count: 2 },
@@ -273,22 +274,24 @@ describe("hanoi funnel metrics", () => {
       ],
     });
 
-    expect(charts.leadQualityByDay).toEqual([
+    expect(charts.leadQualityByDay.map(({ leads, ...point }) => ({ ...point, leadCount: leads.length }))).toEqual([
       {
         day: "2026-09-01",
-        total: 3,
+        total: 4,
         strongQualified: 1,
         weakQualified: 1,
         nonQualified: 1,
-        undefinedQualified: 0,
+        undefinedQualified: 1,
+        leadCount: 4,
       },
       {
         day: "2026-09-02",
         total: 2,
         strongQualified: 0,
-        weakQualified: 0,
+        weakQualified: 1,
         nonQualified: 1,
-        undefinedQualified: 1,
+        undefinedQualified: 0,
+        leadCount: 2,
       },
       {
         day: "2026-09-03",
@@ -297,8 +300,16 @@ describe("hanoi funnel metrics", () => {
         weakQualified: 0,
         nonQualified: 0,
         undefinedQualified: 0,
+        leadCount: 0,
       },
     ]);
+    expect(charts.leadQualityByDay[0].leads[1]).toMatchObject({
+      leadId: "l2",
+      carId: "c2",
+      picName: "An",
+      qualified: "WEAK_QUALIFIED",
+      category: "strongQualified",
+    });
     expect(charts.winCasesByDay).toEqual([
       { day: "2026-09-01", count: 2 },
       { day: "2026-09-02", count: 0 },

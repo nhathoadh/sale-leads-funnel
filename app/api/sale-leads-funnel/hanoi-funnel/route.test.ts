@@ -66,10 +66,11 @@ describe("Hanoi funnel PIC options", () => {
       { carId: "summary-image", additionalImages: null },
       { carId: "zalo-image", additionalImages: null },
       { carId: "request-image", additionalImages: null },
-      { carId: "non-qualified", additionalImages: null },
+      { carId: "non-qualified", additionalImages: { outside: [{ url: "car.jpg" }] } },
+      { carId: "no-contact", additionalImages: null },
     ].map((row) => ({
       ...row, leadId: row.carId, phone: row.carId, day: "2026-10-01",
-      qualified: "NON_QUALIFIED", crmStage: "CONTACTED",
+      qualified: row.carId === "non-qualified" ? "NON_QUALIFIED" : "WEAK_QUALIFIED", crmStage: "CONTACTED",
     }));
     vi.mocked(vucarV2Query).mockImplementation(async (sql, params) => {
       if (sql.includes('AS "carId"') && sql.includes("AS qualified")) return { rows: leads } as any;
@@ -88,9 +89,18 @@ describe("Hanoi funnel PIC options", () => {
       `http://localhost/api/sale-leads-funnel/hanoi-funnel?from=2026-10-01&to=2026-10-01&team=HANOI&pic=${members[0].id}`,
     ));
     expect(response.status).toBe(200);
-    expect((await response.json()).leadQualityByDay).toEqual([{
-      day: "2026-10-01", total: 5, strongQualified: 3, weakQualified: 1,
-      nonQualified: 1, undefinedQualified: 0,
-    }]);
+    const [point] = (await response.json()).leadQualityByDay;
+    expect(point).toMatchObject({
+      day: "2026-10-01", total: 6, strongQualified: 3, weakQualified: 1,
+      nonQualified: 1, undefinedQualified: 1,
+    });
+    expect(Object.fromEntries(point.leads.map((lead: any) => [lead.carId, lead.category]))).toEqual({
+      "crm-image": "strongQualified",
+      "summary-image": "strongQualified",
+      "zalo-image": "strongQualified",
+      "request-image": "weakQualified",
+      "non-qualified": "nonQualified",
+      "no-contact": "undefinedQualified",
+    });
   });
 });
