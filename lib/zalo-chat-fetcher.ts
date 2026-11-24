@@ -1,4 +1,5 @@
 import { vucarZaloQuery } from "@/lib/db"
+import { zaloRelationsSql } from "@/lib/zalo-relations"
 
 /**
  * Chat message shape returned by fetchZaloMessagesFromDb.
@@ -25,7 +26,7 @@ export interface ZaloChatMessage {
  * Fetch Zalo chat history directly from the VucarZalo database (replaces the
  * legacy 2-source fallback in lib/chat-history-service.ts).
  *
- * Source: `messages` JOIN `leads_relation` by (thread_id, own_id) filtered by phone.
+ * Source: `messages` JOIN the phone's Zalo threads (`leads_relation`, or `audit_log` sends when missing).
  *
  * Returns the last `limit` messages in CHRONOLOGICAL order (oldest first),
  * which is what the harness expects when formatting the chat section.
@@ -42,7 +43,7 @@ export async function fetchZaloMessagesFromDb({
 }): Promise<ZaloChatMessage[]> {
   try {
     const params: unknown[] = [phone]
-    let whereClause = "WHERE lr.phone = $1"
+    let whereClause = "WHERE TRUE"
     if (cutAt) {
       params.push(cutAt instanceof Date ? cutAt.toISOString() : cutAt)
       whereClause += ` AND m.created_at <= $${params.length}`
@@ -52,7 +53,7 @@ export async function fetchZaloMessagesFromDb({
 
     const res = await vucarZaloQuery(
       `SELECT m.msg_id, m.content, m.is_self, m.created_at, m.display_name, m.source, m.msg_type
-       FROM leads_relation lr
+       FROM ${zaloRelationsSql("ARRAY[$1::text]")} lr
        JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
        ${whereClause}
        ORDER BY m.created_at DESC

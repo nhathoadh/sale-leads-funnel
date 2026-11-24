@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { zaloRelationsSql } from "@/lib/zalo-relations";
 
 import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { biddings } from "@/lib/dealer-service";
@@ -166,8 +167,7 @@ export async function GET(request: Request) {
       row.phone
         ? vucarZaloQuery(
             `SELECT account_id::text AS account_id, friend_id::text AS friend_id
-             FROM leads_relation
-             WHERE phone = $1
+             FROM ${zaloRelationsSql("ARRAY[$1::text]")} lr
              LIMIT 1`,
             [String(row.phone)],
           ).catch(unavailable("zalo_unavailable", { rows: [] }))

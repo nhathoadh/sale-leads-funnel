@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { zaloRelationsSql } from "@/lib/zalo-relations";
 
 import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { parseSubteamParam, resolveSubteamPicFilter } from "@/lib/sale-subteams";
@@ -807,9 +808,8 @@ export async function GET(request: Request) {
                    )
                  )
                ) AS "customerImageCount"
-             FROM leads_relation lr
+             FROM ${zaloRelationsSql("$1::text[]")} lr
              LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
-             WHERE lr.phone = ANY($1::text[])
              GROUP BY lr.phone`,
             [qualityPhones],
           ).catch(qualityUnavailable)
@@ -882,10 +882,9 @@ export async function GET(request: Request) {
               SELECT
                 lr.phone,
                 (m.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date::text AS "messageDay"
-              FROM leads_relation lr
+              FROM ${zaloRelationsSql("$1::text[]")} lr
               JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
-              WHERE lr.phone = ANY($1::text[])
-                AND m.is_self = true
+              WHERE m.is_self = true
                 AND m.source = 'user'
                 AND (m.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $2::date AND $3::date
               GROUP BY lr.phone, "messageDay"
@@ -914,10 +913,9 @@ export async function GET(request: Request) {
                 lr.phone,
                 (m.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date::text AS day,
                 m.content
-              FROM leads_relation lr
+              FROM ${zaloRelationsSql("$1::text[]")} lr
               JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
-              WHERE lr.phone = ANY($1::text[])
-                AND m.is_self = true
+              WHERE m.is_self = true
                 AND m.content IS NOT NULL
                 AND m.content LIKE '{%'
                 AND m.content LIKE '%sendBubbleMessage%'

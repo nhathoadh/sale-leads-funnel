@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { zaloRelationsSql } from "@/lib/zalo-relations";
 
 import { vucarV2Query, vucarZaloQuery } from "@/lib/db";
 import { parseSubteamParam, resolveSubteamPicFilter } from "@/lib/sale-subteams";
@@ -548,9 +549,8 @@ async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Prom
                  )
                  AND m.content ~* '(giá|gia|trả|tra|mua|khách|khach|khoảng|khoang|tầm|tam|giao dịch|giao dich)'
              ) AS sale_text_quote_messages
-           FROM leads_relation lr
+           FROM ${zaloRelationsSql("$1::text[]")} lr
            LEFT JOIN messages m ON m.thread_id = lr.friend_id AND m.own_id = lr.account_id
-           WHERE lr.phone = ANY($1::text[])
            GROUP BY lr.phone`,
           [phones],
         ).catch(unavailable("zalo_unavailable", { rows: [] }))
