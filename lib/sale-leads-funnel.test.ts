@@ -433,6 +433,17 @@ describe("classifySaleLeadStage", () => {
     ).toMatchObject({ needsInspectionBooking: false, needsPostInspectionQuote: true });
   });
 
+  it("puts car-viewing leads in Xem xe ahead of no Zalo, but after failed, delayed and success", () => {
+    expect(classifySaleLeadStage(lead({ hasInspectionBooking: true }))).not.toBe("car_viewing_scheduled");
+    expect(classifySaleLeadStage(lead({ hasCarViewingBooking: true, hasZaloChat: false }))).toBe("car_viewing_scheduled");
+    expect(classifySaleLeadStage(lead({ hasCarViewingBooking: true, customerMessageCount: 0 }))).toBe("car_viewing_scheduled");
+    expect(classifySaleLeadStage(lead({ hasCarViewingBooking: true, crmStage: "FAILED" }))).toBe("failed");
+    expect(classifySaleLeadStage(lead({ hasCarViewingBooking: true, intention: "DELAY" }))).toBe("delayed");
+    expect(
+      classifySaleLeadStage(lead({ hasCarViewingBooking: true, crmStage: "DEPOSIT_PAID", firstPaymentDate: "2026-09-01" })),
+    ).toBe("success");
+  });
+
   it("does not send post-inspection-only bid leads back to price sourcing", () => {
     expect(
       classifySaleLeadStage(
@@ -635,6 +646,7 @@ describe("sale lead stage config", () => {
       "need_price_source",
       "need_quote",
       "follow_up_after_quote",
+      "car_viewing_scheduled",
       "delayed",
       "failed",
       "success",
@@ -666,6 +678,7 @@ describe("buildSaleLeadStageSummary", () => {
         need_price_source: 5,
         need_quote: 4,
         follow_up_after_quote: 6,
+        car_viewing_scheduled: 2,
         delayed: 1,
         failed: 1,
         success: 0,
@@ -675,13 +688,14 @@ describe("buildSaleLeadStageSummary", () => {
 
     expect(buildSaleLeadStageSummary(counts)).toEqual({
       total: 22,
-      workableTotal: 15,
+      workableTotal: 17,
       stages: [
         expect.objectContaining({ key: "need_contact", count: 2, workableCount: 0 }),
         expect.objectContaining({ key: "need_images", count: 3, workableCount: 0 }),
         expect.objectContaining({ key: "need_price_source", count: 5, workableCount: 5 }),
         expect.objectContaining({ key: "need_quote", count: 4, workableCount: 4 }),
         expect.objectContaining({ key: "follow_up_after_quote", count: 6, workableCount: 6 }),
+        expect.objectContaining({ key: "car_viewing_scheduled", count: 2, workableCount: 2 }),
         expect.objectContaining({ key: "delayed", count: 1, workableCount: 0 }),
         expect.objectContaining({ key: "failed", count: 1, workableCount: 0 }),
         expect.objectContaining({ key: "success", count: 0, workableCount: 0 }),
@@ -814,6 +828,7 @@ describe("sale lead list filters", () => {
         need_price_source: 0,
         need_quote: 1,
         follow_up_after_quote: 1,
+        car_viewing_scheduled: 0,
         no_zalo: 0,
       },
       gaps: {

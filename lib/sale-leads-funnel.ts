@@ -9,7 +9,8 @@ export type SaleLeadWorkStage =
   | "need_quote"
   | "need_inspection_booking"
   | "need_post_inspection_quote"
-  | "follow_up_after_quote";
+  | "follow_up_after_quote"
+  | "car_viewing_scheduled";
 
 export type SaleLeadGapBucket = "lt5" | "5_10" | "gt10" | "no_price";
 export type SaleLeadTeamFilter = "HANOI" | "HCM";
@@ -158,6 +159,8 @@ export interface SaleLeadClassifierInput {
   hasEnoughImages: boolean;
   inInspectionRegion: boolean;
   hasInspectionBooking: boolean;
+  /** Ever had a car_viewing booking (lịch xem xe), whatever its status. */
+  hasCarViewingBooking?: boolean;
   isInspected: boolean;
   latestInspectionAt?: string | null;
   highestBid?: number | null;
@@ -279,6 +282,12 @@ export const SALE_LEAD_STAGE_CONFIG: SaleLeadStageConfig[] = [
     description: "Đã báo giá nhưng chưa đặt cọc, win hay thất bại.",
   },
   {
+    key: "car_viewing_scheduled",
+    label: "Xem xe",
+    shortLabel: "Xem xe",
+    description: "Đã từng được đặt lịch xem xe nhưng chưa thành công, thất bại hay hoãn bán.",
+  },
+  {
     key: "delayed",
     label: "Hoãn bán",
     shortLabel: "Hoãn",
@@ -308,6 +317,7 @@ const WORKABLE_SALE_LEAD_STAGE_KEYS = new Set<SaleLeadWorkStage>([
   "need_price_source",
   "need_quote",
   "follow_up_after_quote",
+  "car_viewing_scheduled",
 ]);
 const GAP_BUCKET_LABELS: Record<SaleLeadGapBucket, string> = {
   lt5: "<5%",
@@ -327,6 +337,7 @@ const SALE_LEAD_STAGE_TONES: Record<SaleLeadWorkStage, SaleLeadStageTone> = {
   need_inspection_booking: { badgeClass: "border-teal-200 bg-teal-50 text-teal-700" },
   need_post_inspection_quote: { badgeClass: "border-indigo-200 bg-indigo-50 text-indigo-700" },
   follow_up_after_quote: { badgeClass: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  car_viewing_scheduled: { badgeClass: "border-cyan-200 bg-cyan-50 text-cyan-700" },
   delayed: { badgeClass: "border-amber-200 bg-amber-50 text-amber-700" },
   failed: { badgeClass: "border-rose-200 bg-rose-50 text-rose-700" },
   success: { badgeClass: "border-lime-200 bg-lime-50 text-lime-700" },
@@ -784,6 +795,8 @@ export function classifySaleLeadStage(input: SaleLeadClassifierInput): SaleLeadW
   if (crmStage === "FAILED") return "failed";
   if (TERMINAL_CRM_STAGES.has(crmStage)) return null;
   if (intention === "DELAY") return "delayed";
+  // A booked car viewing outranks every chat-based stage, including no Zalo.
+  if (input.hasCarViewingBooking) return "car_viewing_scheduled";
 
   if (!input.hasZaloChat) return "no_zalo";
   if (input.customerMessageCount <= 0) return "need_contact";

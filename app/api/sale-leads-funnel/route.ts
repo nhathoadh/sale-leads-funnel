@@ -570,10 +570,12 @@ async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Prom
       : Promise.resolve({ rows: [] }),
     carIds.length > 0
       ? vucarV2Query(
-          `SELECT car_id, MIN(time) AS booked_at
+          `SELECT car_id,
+             MIN(time) FILTER (WHERE booking_type = 'inspection') AS booked_at,
+             BOOL_OR(booking_type = 'car_viewing') AS has_car_viewing
            FROM bookings
            WHERE car_id = ANY($1::text[])
-             AND booking_type = 'inspection'
+             AND booking_type IN ('inspection', 'car_viewing')
            GROUP BY car_id`,
           [carIds],
         ).catch(unavailable("booking_unavailable", { rows: [] }))
@@ -619,7 +621,8 @@ async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Prom
       const aiMessageCount = Number(zalo?.ai_message_count ?? 0);
       const customerZaloImageCount = Number(zalo?.customer_image_message_count ?? 0);
       const inspected = inspectionByCar.has(row.car_id);
-      const booked = bookingByCar.has(row.car_id);
+      const booking = bookingByCar.get(row.car_id);
+      const booked = Boolean(booking?.booked_at);
       const priceCustomer = resolveSaleLeadCustomerPrice(
         row.price_customer,
         latest?.price_customer,
@@ -648,6 +651,7 @@ async function loadFunnelRows({ from, to, team, picIds }: FunnelRowsInput): Prom
         hasEnoughImages: hasImages,
         inInspectionRegion: isInInspectionRegion(row.location ?? latest?.location),
         hasInspectionBooking: booked,
+        hasCarViewingBooking: booking?.has_car_viewing === true,
         isInspected: inspected,
         latestInspectionAt: inspectionByCar.get(row.car_id)?.inspected_at
           ? String(inspectionByCar.get(row.car_id)?.inspected_at)

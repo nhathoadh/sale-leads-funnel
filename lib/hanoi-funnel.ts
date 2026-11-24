@@ -324,7 +324,7 @@ const WORKABLE_GAP_COLORS: Record<SaleLeadGapBucket, string> = {
   gt10: "#fbbf24",
   no_price: "#94a3b8",
 };
-const WORKABLE_STAGE_KEYS = new Set(["need_price_source", "need_quote", "follow_up_after_quote"]);
+const WORKABLE_STAGE_KEYS = new Set(["need_price_source", "need_quote", "follow_up_after_quote", "car_viewing_scheduled"]);
 const failureReasonGroups: Array<{ key: HanoiFailureReasonGroupKey; label: string }> = [
   { key: "worked", label: "Lead đã làm việc (có ảnh)" },
   { key: "not_worked", label: "Lead chưa làm việc" },
